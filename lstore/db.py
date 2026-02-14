@@ -19,7 +19,7 @@ class Database():
 
     def close(self):
         # close the database path.
-        self.table.clear()
+        self.tables.clear()
         self._table_map.clear()
 
 
