@@ -1,3 +1,4 @@
+import os
 from lstore.table import Table
 
 class Database():
@@ -5,14 +6,22 @@ class Database():
     def __init__(self):
         self.tables = []
         # add a dict for 0(1) to lookup by name and inprove the time complex
+        # key -> table name(string)
+        # value -> table object
         self._table_map = {}
 
     # Not required for milestone1
     def open(self, path):
-        pass
+        # open the database at a specific directory pathy.
+        self.path = path
+        os.makedirs(path, exist_ok = True)
+        
 
     def close(self):
-        pass
+        # close the database path.
+        self.table.clear()
+        self._table_map.clear()
+
 
     """
     # Creates a new table
