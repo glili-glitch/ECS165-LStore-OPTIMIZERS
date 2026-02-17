@@ -21,6 +21,8 @@ class Database():
         # close the database path.
         self.tables.clear()
         self._table_map.clear()
+        #delete function
+        
 
 
     """
