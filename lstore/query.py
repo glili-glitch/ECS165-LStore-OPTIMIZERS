@@ -70,8 +70,12 @@ class Query:
 
         page_range = self.table.page_range_directory[page_range_number]
 
-        # allocate  RID
-        rid = next(_rid_counter)
+        # allocate  RID (durable version)
+        #rid = next(_rid_counter)
+
+        # it seve in db.close() and recover it in db.open()
+        rid  = self.table.next_rid
+        self.table.next_rid += 1
         # print(rid)
 
         # schema for base record
