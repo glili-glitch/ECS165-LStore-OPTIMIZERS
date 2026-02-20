@@ -37,15 +37,15 @@ class Page:
         return int.from_bytes(value_in_bytes, byteorder='little')
     # Serialization APIs
     # tanslate page to writing to the file
-    def to_bytes(self) -> bytes:
+    def to_bytes(self):
         # change the page to exactly PAGE_SIZE bytes.
-        if len(self.data) ! = PAGE_SIZE:
+        if len(self.data) != PAGE_SIZE:
             raise ValueError(f"Page data lenght is not expected page size!")
         return bytes(self.data)
 
     @classmethod
     # translate file form the disk to it page
-    def from_bytes(cls, page_bytes: bytes) -> "Page":
+    def from_bytes(cls, page_bytes: bytes):
         if len(page_bytes) != PAGE_SIZE:
             raise ValueError(f"Note expected page bytes lenght!")
         page = cls()
@@ -55,18 +55,10 @@ class Page:
         num = 0
         zero = b"\x00" * COLUMN_ENTRY_SIZE
         for off in range(0, PAGE_SIZE,COLUMN_ENTRY_SIZE):
-            if page.data[off:off + COLUMN_ENTRY_SIZE] ! = zero:
+            if page.data[off:off + COLUMN_ENTRY_SIZE] != zero:
                 num += 1
 
         page.num_records = num
         page.current_offset = num * COLUMN_ENTRY_SIZE
         return page
 
-
-
-
-    
-
-
-
-# test
