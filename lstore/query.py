@@ -158,156 +158,141 @@ class Query:
     # Returns True if update is succesful
     # Returns False if no records exist with given key or if the target record cannot be accessed due to 2PL locking
     """
-    def update(self, primary_key, *columns):
-        # IMPORTANT: must check if columns are all set to null, if so then you are doing a delete operation and SE should be all 0's
-        # use index to get RID of base record
-        # use page directory to get data locations of base record
-        # create new tail record object
-        # construct variable that holds all columns including metadata 
-        # update indirection pointer and schema encoding of base record 
-        # call add recoFrd in table class 
-        # (note: if record is being updated for the first time, must add copy of base record as tail record)
+        def update(self, primary_key, *columns):
+            # IMPORTANT: must check if columns are all set to null, if so then you are doing a delete operation and SE should be all 0's
+            # use index to get RID of base record
+            # use page directory to get data locations of base record
+            # create new tail record object
+            # construct variable that holds all columns including metadata 
+            # update indirection pointer and schema encoding of base record 
+            # call add recoFrd in table class 
+            # (note: if record is being updated for the first time, must add copy of base record as tail record)
 
-        rids = self.table.index.locate(self.table.key,primary_key)
-        if not rids:
-            return False
-        base_rid = rids[0]
-
-        if columns[self.table.key] is not None:
-            new_primary_key = columns[self.table.key]
-            existing = self.table.index.locate(self.table.key, new_primary_key) or []
-            if any(r != base_rid for r in existing):
+            rids = self.table.index.locate(self.table.key,primary_key)
+            if not rids:
                 return False
-        # tuple->delete detection(FIX)
-        is_delete = all(i is None for i in columns)
-        has_update = any(i is not None for i in columns)
+            base_rid = rids[0]
 
-        base_page_directory_entry = self.table.page_directory[base_rid]
-        base_page_range_number = base_page_directory_entry.page_range_number
-        base_page_range = self.table.page_range_directory[base_page_range_number]
-        base_data_locations = base_page_directory_entry.data_locations
+            # check if is conflicts of the primary key
+            if columns[self.table.key] is not None:
+                new_primary_key = columns[self.table.key]
+                existing = self.table.index.locate(self.table.key, new_primary_key) or []
+                if any(r != base_rid for r in existing):
+                    return False
 
-        # locate base schema encoding
+            # tuple->delete detection(FIX)
+            is_delete = all(i is None for i in columns)
+            has_update = any(i is not None for i in columns)
 
-        # if base_data_locations[table.INDIRECTION_COLUMN] is None:
-        #     base_indirection_page_number = base_page_range.base_pages[table.INDIRECTION_COLUMN].__len__() - 1
-        #     base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
-        #     base_indirection_offset = base_indirection_page.current_offset
-        # else:
-        #     base_indirection_page_number = base_data_locations[table.INDIRECTION_COLUMN].page_number
-        #     base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
-        #     base_indirection_offset = base_data_locations[table.INDIRECTION_COLUMN].offset
+            # capture previous
+            previous_columns = self.table.construct_full_record(base_rid)
+            if hasattr(previous_columns, "columns"):
+                previous_columns = previous_columns.columns
 
-        # base_schema_page_number = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
-        # base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
-        # base_schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
-        # base_schema = format(base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE), f"0{self.table.num_columns}b")
+            # locate base record storage
+            base_page_directory_entry = self.table.page_directory[base_rid]
+            base_page_range_number = base_page_directory_entry.page_range_number
+            base_page_range = self.table.page_range_directory[base_page_range_number]
+            base_data_locations = base_page_directory_entry.data_locations
+      
+            # base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
+            indire_coord = base_data_locations[table.INDIRECTION_COLUMN]
+            if indire_coord is None:
+                raise Exception("Not store pagecoord for INDIRECTION!")
+            base_indirection_page_number = indire_coord.page_number
+            base_indirection_offset = indire_coord.offset
+            base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
 
-        # base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
-        indire_coord = base_data_locations[table.INDIRECTION_COLUMN]
-        if indire_coord is None:
-            raise Exception("Not store pagecoord for INDIRECTION!")
-        base_indirection_page_number = indire_coord.page_number
-        base_indirection_offset = indire_coord.offset
-        base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
+            # current base indirection value to read
+            base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
 
-        # current base indirection value to read
-        base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
+            # locate base SCHEMA_ENcoding cell
+            schema_coord = base_data_locations[self.table.SCHEMA_ENCODING_COLUMN]
+            if schema_coord is None:
+                raise exception(f"This Base_SCHEMA coord none for base_rid!")
+            base_schema_page_number = schema_coord.page_number
+            base_schema_offset = schema_coord.offset
+            base_schema_page = base_page_range.base_pages[self.table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
 
-        # locate base SCHEMA_ENcoding cell
-        schema_coord = base_data_locations[table.SCHEMA_ENCODING_COLUMN]
-        if schema_coord is None:
-            raise exception(f"This Base_SCHEMA coord none for base_rid!")
-        base_schema_page_number = schema_coord.page_number
-        base_schema_offset = schema_coord.offset
-        base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
-
-        base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
-        base_schema = format(base_schema_int, f"0{self.table.num_columns}b")
+            base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
+            base_schema = format(base_schema_int, f"0{self.table.num_columns}b")
 
 
-        #schema encoding
+            #schema encoding
 
-        schema = ""
-        new_base_schema = base_schema
-        for i, v in enumerate(columns):
-            if v is None:
-                schema += "0"
-            else:
-                schema += "1"
-                new_base_schema = new_base_schema[:i] + "1" + new_base_schema[i+1:]
-        
-        if is_delete:
-            new_base_schema = '0' * self.table.num_columns
-            schema = '0' * self.table.num_columns
-
-        copy_tail_record = None
-
-        if base_schema == '0' * self.table.num_columns and has_update and not is_delete:
-            copy_columns = [None] * self.table.num_columns
-            for i in range(self.table.num_columns):
-                base_page_number = base_data_locations[i + 3].page_number
-                base_page = base_page_range.base_pages[i + 3][base_page_number]
-                base_offset = base_data_locations[i + 3].offset
-                column_value = base_page.read(base_offset // page.COLUMN_ENTRY_SIZE)
-                copy_columns[i] = column_value
-            copy_rid = self.table.next_rid
-            self.table.next_rid += 1
-            copy_tail_record = Record(copy_rid, primary_key, copy_columns)
-            copy_schema_int = 0
-            full_schema = (1 << self.table.num_columns) -1
-            copy_all_columns = [copy_rid,base_indirection, full_schema] + copy_columns
-            self.table.add_record(base_page_range_number, False, *copy_all_columns, record=copy_tail_record)
-        
-        tail_rid = self.table.next_rid
-        self.table.next_rid += 1
-        tail_record = Record(tail_rid, primary_key, list(columns))
-
-        tail_indirection = None
-        if base_schema == '0' * self.table.num_columns and has_update and not is_delete:
-            tail_indirection = copy_tail_record.rid
-        else:
-            tail_indirection = base_indirection
-
-        if is_delete:
-            tail_indirection = base_rid
-
-        all_columns = [tail_record.rid, tail_indirection, int(schema, 2)] + list(columns)
-        self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
-
-        # if base_indirection_offset == page.PAGE_SIZE:
-        # if not base_indirection_page.has_capacity():
-        #     base_indirection_page_number += 1
-        #     base_page_range.add_page(True, table.INDIRECTION_COLUMN)
-        #     base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
-        #     base_indirection_offset = 0
-
-        # base_indirection_page.write(tail_record.rid, base_indirection_offset // page.COLUMN_ENTRY_SIZE)
-        # base_schema_page.write(int(new_base_schema, 2), base_schema_offset // page.COLUMN_ENTRY_SIZE)
-
-        # base_page_directory_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(base_indirection_page_number, base_indirection_offset)
-
-        # trying to write back into the base record slot instead of append!
-        base_indirection_page.write(tail_record.rid, base_indirection_offset // page.COLUMN_ENTRY_SIZE)
-        base_schema_page.write(int(new_base_schema,2), base_schema_offset // page.COLUMN_ENTRY_SIZE)
-
-        current_columns = self.table.construct_full_record(base_rid)
-        if hasattr(current_columns, "columns"):
-            current_columns = current_columns.columns
-
-        previous_columns = self.table.construct_full_record(base_rid, 1)
-        if hasattr(previous_columns,"columns"):
-            previous_columns = previous_columns.columns
-
-        for i, (curr_val, prev_val) in enumerate(zip(current_columns, previous_columns)):
-            if curr_val != prev_val:
-                if prev_val is not None:
-                    self.table.index.remove_from_index(i, prev_val, base_rid)  # Remove OLD value
-                if curr_val is not None:
-                    self.table.index.add_to_index(i, curr_val, base_rid)       # Add NEW value
-
-        return True 
+            schema = ""
+            new_base_schema = base_schema
+            for i, v in enumerate(columns):
+                if v is None:
+                    schema += "0"
+                else:
+                    schema += "1"
+                    new_base_schema = new_base_schema[:i] + "1" + new_base_schema[i+1:]
             
+            if is_delete:
+                new_base_schema = "0" * self.table.num_columns
+                schema = "0" * self.table.num_columns
+
+            copy_tail_record = None
+
+            if base_schema == "0" * self.table.num_columns and has_update and not is_delete:
+                copy_columns = [None] * self.table.num_columns
+                for i in range(self.table.num_columns):
+                    # data (RID, INDIRECTION,SCHEMA)
+                    coord = base_data_locations[i + 3]
+                    base_page_number = coord.page_number
+                    base_offset = coord.offset
+                    base_page = base_page_range.base_pages[i + 3][base_page_number]
+                    copy_columns[i] = base_page.read(base_offset // page.COLUMN_ENTRY_SIZE)
+                   
+                copy_rid = self.table.next_rid
+                self.table.next_rid += 1
+                
+                copy_tail_record = Record(copy_rid, primary_key, copy_columns)
+                #copy_schema_int = 0
+                full_schema = (1 << self.table.num_columns) -1
+                copy_all_columns = [copy_rid,base_indirection, full_schema] + copy_columns
+                self.table.add_record(base_page_range_number, False, *copy_all_columns, record=copy_tail_record)
+            
+            tail_rid = self.table.next_rid
+            self.table.next_rid += 1
+            tail_record = Record(tail_rid, primary_key, list(columns))
+
+            tail_indirection = None
+            if base_schema == "0" * self.table.num_columns and has_update and not is_delete:
+                tail_indirection = copy_tail_record.rid
+            else:
+                tail_indirection = base_indirection
+
+            if is_delete:
+                tail_indirection = base_indirection
+
+            all_columns = [tail_record.rid, tail_indirection, int(schema, 2)] + list(columns)
+            self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
+
+        
+            # trying to write back into the base record slot instead of append!(overwrite)
+            base_indirection_page.write(tail_record.rid, base_indirection_offset // page.COLUMN_ENTRY_SIZE)
+            base_schema_page.write(int(new_base_schema,2), base_schema_offset // page.COLUMN_ENTRY_SIZE)
+
+            # update index
+            current_columns = self.table.construct_full_record(base_rid)
+            if hasattr(current_columns, "columns"):
+                current_columns = current_columns.columns
+
+            
+            for i, (curr_val, prev_val) in enumerate(zip(current_columns, previous_columns)):
+                if curr_val != prev_val:
+                    if prev_val is not None:
+                        self.table.index.remove_from_index(i, prev_val, base_rid)  # Remove OLD value
+                    if curr_val is not None:
+                        self.table.index.add_to_index(i, curr_val, base_rid)       # Add NEW value
+
+            return True 
+                
+
+
+
     """
     :param start_range: int         # Start of the key range to aggregate 
     :param end_range: int           # End of the key range to aggregate 

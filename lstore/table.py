@@ -10,7 +10,7 @@ RID_COLUMN = 0
 INDIRECTION_COLUMN = 1
 # TIMESTAMP_COLUMN = 2
 SCHEMA_ENCODING_COLUMN = 2
-
+DATA_COLUMN_OFFSET = 3
 NUM_RECORDS_PER_RANGE = 1024
 
 @dataclass
@@ -46,6 +46,10 @@ class Table:
         self.index = Index(self)
         self.merge_threshold_pages = 50  # The threshold to trigger a merge
         self.page_range_directory = {}
+        self.RID_COLUMN = 0
+        self.INDIRECTION_COLUMN = 1
+        self.SCHEMA_ENCODING_COLUMN = 2
+        self.DATA_COLUMN_OFFSET = 3
 
     def get_primary_key(self, rid):
         page_directory_entry = self.page_directory[rid]
@@ -110,9 +114,9 @@ class Table:
 
         for column_number in range(self.num_columns + 3):
 
-            if all_columns[column_number] is None:
-                new_record_data_locations[column_number] = None
-                continue
+            # if all_columns[column_number] is None:
+            #     new_record_data_locations[column_number] = None
+            #     continue
 
             last_page = pages[column_number][-1]
             last_record_page_number = pages[column_number].__len__() - 1
@@ -128,9 +132,11 @@ class Table:
 
             new_record_data_locations[column_number] = new_page_coord
             page_to_write = pages[column_number][new_page_coord.page_number]
+            
+            # if is None then 0
             val = all_columns[column_number]
-            if val is not None and not isinstance(val, int):
-                raise Exception(f"Noe-int at col")
+            if val is None:
+                val = 0            
             page_to_write.write(val)
 
         new_page_directory_entry = PageDirectoryEntry(page_range_number, is_base, new_record_data_locations)
