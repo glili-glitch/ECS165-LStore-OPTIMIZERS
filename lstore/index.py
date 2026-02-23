@@ -1,12 +1,11 @@
 """
-A data strucutre holding indices for various columns of a table. Key column should be indexd by default, other columns can be indexed through this object. Indices are usually B-Trees, but other data structures can be used as well.
+
+Secondary indexing for L-Store tables.
 """
 
-class Index:
 
-    # every index is a dictionary that maps a column value to a set of RIDs 
+class Index:
     def __init__(self, table):
-        self.indices = [None] *  table.num_columns
         self.table = table
         # Key column should be indexed by default (commonly column 0).
         # If your table defines key column differently, change 0 to that column index.
@@ -14,64 +13,74 @@ class Index:
         pass
 
 
-    def add_to_index(self, column, value, rid):
-        if self.indices[column] is None:
-            self.create_index(column)
-        idx = self.indices[column]
-        if value in idx: 
-            rids_set = idx[value]
-            if rids_set is None:
-                rids_set = set()
-            rids_set.add(rid)
-            idx[value] = rids_set
+    def add_to_index(self, column_number, value, rid):
+        if value is None:
+            return True
+        if self.indices[column_number] is None:
+            return True
+        index_map = self.indices[column_number]
+        bucket = index_map.get(value)
+        if bucket is None:
+            index_map[value] = {rid}
         else:
-            idx[value] = set([rid])
+            bucket.add(rid)
         return True
 
-    def remove_from_index(self, column, value, rid):
-        if self.indices[column] is None:
-            return False
-        idx = self.indices[column]
-        if value in idx:
-            rids_set = idx[value]
-            rids_set.discard(rid)
-            if rids_set == set():
-                rids_set = None
-            idx[value] = rids_set
-        else:
-            return False
+    def remove_from_index(self, column_number, value, rid):
+        if value is None:
+            return True
+        index_map = self.indices[column_number]
+        if index_map is None:
+            return True
+        bucket = index_map.get(value)
+        if bucket is None:
+            return True
+        bucket.discard(rid)
+        if not bucket:
+            index_map.pop(value, None)
         return True
 
     def locate(self, column, value):
-        if self.indices[column] is None:
-            return None
-        idx = self.indices[column]
-        rids = idx.get(value, set())
-        return list(rids)
-
-
-    """
-    # Returns the RIDs of all records with values in column "column" between "begin" and "end"
-    """
+        index_map = self.indices[column]
+        if index_map is None:
+            return []
+        return list(index_map.get(value, set()))
 
     def locate_range(self, begin, end, column):
-        all_rids = set()
-        for i in range(begin, end + 1):
-            all_rids = all_rids.union(self.locate(column, i))
-        return list(all_rids)
+        index_map = self.indices[column]
+        if index_map is None:
+            rids = set()
+            for rid in self.table.iter_base_rids(include_deleted=False):
+                value = self.table.get_column_value(rid, column)
+                if value is None:
+                    continue
+                if begin <= value <= end:
+                    rids.add(rid)
+            return list(rids)
 
-    """
-    # optional: Create index on specific column
-    """
+        rids = set()
+        for value, bucket in index_map.items():
+            if begin <= value <= end:
+                rids.update(bucket)
+        return list(rids)
 
     def create_index(self, column_number):
-        idx = {}
-        self.indices[column_number] = idx
+        if self.indices[column_number] is not None:
+            return True
+        index_map = {}
+        self.indices[column_number] = index_map
+        for rid in self.table.iter_base_rids(include_deleted=False):
+            value = self.table.get_column_value(rid, column_number)
+            if value is None:
+                continue
+            bucket = index_map.get(value)
+            if bucket is None:
+                index_map[value] = {rid}
+            else:
+                bucket.add(rid)
         return True
-    
-    """
-    # optional: Drop index of specific column
-    """
 
     def drop_index(self, column_number):
         self.indices[column_number] = None
+        return True
+
