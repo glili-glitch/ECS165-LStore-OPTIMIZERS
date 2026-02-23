@@ -10,7 +10,7 @@ RID_COLUMN = 0
 INDIRECTION_COLUMN = 1
 # TIMESTAMP_COLUMN = 2
 SCHEMA_ENCODING_COLUMN = 2
-
+DATA_COLUMN_OFFSET = 3
 NUM_RECORDS_PER_RANGE = 1024
 
 @dataclass
@@ -46,6 +46,10 @@ class Table:
         self.index = Index(self)
         self.merge_threshold_pages = 50  # The threshold to trigger a merge
         self.page_range_directory = {}
+        self.RID_COLUMN = 0
+        self.INDIRECTION_COLUMN = 1
+        self.SCHEMA_ENCODING_COLUMN = 2
+        self.DATA_COLUMN_OFFSET = 3
 
     def get_primary_key(self, rid):
         page_directory_entry = self.page_directory[rid]
@@ -67,6 +71,28 @@ class Table:
     
     def add_record(self, page_range_number, is_base, *all_columns, record):
         page_range = self.page_range_directory[page_range_number]
+        all_columns = list(all_columns)
+        if all_columns[RID_COLUMN] is None:
+            all_columns[RID_COLUMN] = record.rid
+        if all_columns[SCHEMA_ENCODING_COLUMN] is None:
+            all_columns[SCHEMA_ENCODING_COLUMN] = 0
+        if all_columns[INDIRECTION_COLUMN] is None:
+            if is_base:
+                all_columns[INDIRECTION_COLUMN] = record.rid
+            else:
+                raise Exception("Tail record missing!")
+
+        for i, v in enumerate(all_columns):
+            if v is None:
+                continue
+            if isinstance(v, str):
+                if i == SCHEMA_ENCODING_COLUMN and set(v) <= {"0", "1"}:
+                    all_columns[i] = int(v, 2)
+                else:
+                    all_columns[i] = int(v)
+            elif not isinstance(v, int):
+                all_columns[i] = int(v)
+
         last_record = page_range.get_last_record(is_base)
         last_record_info = None
         last_record_data_locations = None
@@ -88,9 +114,9 @@ class Table:
 
         for column_number in range(self.num_columns + 3):
 
-            if all_columns[column_number] is None:
-                new_record_data_locations[column_number] = None
-                continue
+            # if all_columns[column_number] is None:
+            #     new_record_data_locations[column_number] = None
+            #     continue
 
             last_page = pages[column_number][-1]
             last_record_page_number = pages[column_number].__len__() - 1
@@ -106,7 +132,12 @@ class Table:
 
             new_record_data_locations[column_number] = new_page_coord
             page_to_write = pages[column_number][new_page_coord.page_number]
-            page_to_write.write(all_columns[column_number])
+            
+            # if is None then 0
+            val = all_columns[column_number]
+            if val is None:
+                val = 0            
+            page_to_write.write(val)
 
         new_page_directory_entry = PageDirectoryEntry(page_range_number, is_base, new_record_data_locations)
         self.page_directory[record.rid] = new_page_directory_entry
