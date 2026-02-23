@@ -90,7 +90,7 @@ class BufferPool:
             return self._frames.get(key)
 
     def _evict_one_locked(self):
-        # IMPORTANT: don't mutate OrderedDict while iterating over it
+        
         for key, frame in list(self._frames.items()):
             if frame.pin_count == 0:
                 if frame.dirty:
