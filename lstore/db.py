@@ -1,193 +1,149 @@
 import os
-import json
-from lstore.page import Page,PAGE_SIZE
-from lstore.table import Table, PageCoord, PageDirectoryEntry
+import pickle
+from itertools import count
+from lstore.table import Table
+from lstore.index import Index
+from lstore.bufferpool import BufferPool
+from lstore.page import Page
 
 class Database():
 
     def __init__(self):
         self.tables = []
-        # add a dict for 0(1) to lookup by name and inprove the time complex
-        # key -> table name(string)
-        # value -> table object
         self._table_map = {}
         self.path = None
+        self.bufferpool = None
 
-    # helper function for disk path
-    def _table_dir(self, table_name: str):
-        return os.path.join(self.path, table_name)
-
-    def _ensure_table_dirs(self, table_name: str):
-        os.makedirs(os.path.join(self._table_dir(table_name), "base"), exist_ok = True)
-        os.makedirs(os.path.join(self._table_dir(table_name), "tail"), exist_ok = True)
-
-    def _meta_file(self, table_name: str):
-        return os.path.join(self._table_dir(table_name), "meta.json")
-    
-    def _page_file(self, table_name: str, is_tail: bool ,page_range_id: int, cid: int, pid: int):
-        folder = "tail" if is_tail else 'base'
-        fname = f"pr_{page_range_id}_col_{cid}_pg_{pid}.bin"
-        return os.path.join(self._table_dir(table_name), folder, fname)
-
-    def _write_page_bytes(self, filepath: str, page_bytes: bytes):
-        if len(page_bytes) != PAGE_SIZE:
-            raise ValueError (f"Not expected page size")
-        os.makedirs(os.path.dirname(filepath), exist_ok = True)
-        with open(filepath, "wb") as files:
-            files.write(page_bytes)
-
-    def _read_page_bytes(self, filepath: str):
-        with open(filepath, "rb") as files:
-            pagebytes = files.read()
-        if len(pagebytes) != PAGE_SIZE:
-            raise ValueError(f"wrong page file!")
-        return pagebytes
-
-    def _read_page_or_empty(self, filepath):
-        # check if the disk path if is empty then return
-        if not os.path.exists(filepath):
-            return Page()
-        return Page.from_bytes(self._read_page_bytes(filepath))
-
-
-    
-    # Not required for milestone1
     def open(self, path):
-        # open the database at a specific directory pathy.
+        """
+        Initialize the bufferpool and load tables from disk if data exists.
+        Rebuilds indexes and resets the RID counter.
+        """
         self.path = path
-        os.makedirs(path, exist_ok = True)
+        os.makedirs(path, exist_ok=True)
 
-        self.tables.clear()
-        self._table_map.clear()
+        # Create and activate bufferpool
+        self.bufferpool = BufferPool(disk_path=path)
+        Page._bufferpool = self.bufferpool
 
-        for table_name in os.listdir(path):
-            table_dir = os.path.join(path, table_name)
-            meta_path = os.path.join(table_dir, "meta.json")
-            if (not os.path.isdir(table_dir)) or (not os.path.exists(meta_path)):
+        db_file = os.path.join(path, 'db.pkl')
+        if os.path.exists(db_file):
+            with open(db_file, 'rb') as f:
+                db_data = pickle.load(f)
+
+            # Restore page ID counter so new pages don't collide
+            Page._next_id = db_data.get('max_page_id', 1)
+
+            for table in db_data['tables']:
+                # Load all page data from individual files via bufferpool
+                self._load_all_pages(table)
+
+                # Rebuild index from data (indexes are not persisted)
+                table.index = Index(table)
+                self._rebuild_index(table)
+
+                self.tables.append(table)
+                self._table_map[table.name] = table
+
+                # Reset TPS for all page ranges (merge state doesn't survive restart)
+                for pr in table.page_range_directory.values():
+                    pr.tps = 0
+
+            # Reset RID counter to max existing RID + 1
+            max_rid = self._find_max_rid()
+            if max_rid > 0:
+                import lstore.query as query_module
+                query_module._rid_counter = count(max_rid + 1)
+
+    def _load_all_pages(self, table):
+        """Load every page for a table from disk through the bufferpool."""
+        for pr_num, pr in table.page_range_directory.items():
+            for col_pages in pr.base_pages:
+                for page in col_pages:
+                    if page.data is None:
+                        self.bufferpool.load_page(page)
+            for col_pages in pr.tail_pages:
+                for page in col_pages:
+                    if page.data is None:
+                        self.bufferpool.load_page(page)
+
+    def _rebuild_index(self, table):
+        """Scan all base records and populate the index with latest values."""
+        for rid in table.page_directory:
+            entry = table.page_directory[rid]
+            if not entry.is_base:
                 continue
+            columns = table.construct_full_record(rid)
+            for col_idx, value in enumerate(columns):
+                if value is not None:
+                    table.index.add_to_index(col_idx, value, rid)
 
-            with open(meta_path, "r", encoding = "utf-8") as file:
-                meta = json.load(file)
-
-            table = Table(meta["name"], meta["num_columns"], meta["key"])
-            total_columns = table.num_columns + 3 # hidden cols
-
-            # Avodi Rid collison we have to restore next RID
-            table.next_rid = meta.get("next_rid", 1)
-
-            # saving page
-            for prid_str, pr_meta in meta.get("page_ranges", {}).items():
-                page_range_id = int(prid_str)
-                table.add_page_range(page_range_id)
-                pr = table.page_range_directory[page_range_id]
-
-                base_counts = pr_meta["base_pages_per_col"]
-                tail_counts = pr_meta["tail_pages_per_col"]
-
-                # base page
-                pr.base_pages = []
-                for cid in range(total_columns):
-                    col_pages = []
-                    for pid in range(base_counts[cid]):
-                        pfile = self._page_file(table.name, False, page_range_id, cid, pid)
-                        col_pages.append(self._read_page_or_empty(pfile))
-                    pr.base_pages.append(col_pages)
-
-                # tail pages
-                pr.tail_pages = []
-                for cid in range(total_columns):
-                    col_pages = []
-                    for pid in range(tail_counts[cid]):
-                        pfile = self._page_file(table.name, True, page_range_id, cid, pid)
-                        col_pages.append(self._read_page_or_empty(pfile))
-                    pr.tail_pages.append(col_pages)
-
-            # restore page_directory
-            table.page_directory = {}
-            for rid_str, entry in meta.get("page_directory", {}).items():
-                rid = int(rid_str)
-                coords = []
-                for c in entry["data_locations"]:
-                    if c is None:
-                        coords.append(None)
-                    else:
-                        coords.append(PageCoord(c[0], c[1]))
-
-                table.page_directory[rid] = PageDirectoryEntry(
-                    entry["page_range_number"],
-                    entry["is_base"],
-                    coords
-                )
-
-            self.tables.append(table)
-            self._table_map[table.name] = table
-    
-        
+    def _find_max_rid(self):
+        """Find the maximum RID across all tables."""
+        max_rid = 0
+        for table in self.tables:
+            for rid in table.page_directory:
+                if rid > max_rid:
+                    max_rid = rid
+        return max_rid
 
     def close(self):
-        # pages and  meta.json flush to disk.
+        """
+        Persist all data to disk:
+        1. Write all pages to individual files via bufferpool
+        2. Pickle table metadata (with page data stripped out)
+        """
         if self.path is None:
             return
+        os.makedirs(self.path, exist_ok=True)
 
+        # Wait for any background merge threads to finish
         for table in self.tables:
-            self._ensure_table_dirs(table.name)
-            total_col = table.num_columns + 3
+            if hasattr(table, 'wait_for_merge'):
+                table.wait_for_merge()
 
-            page_ranges_meta = {}
+        # Step 1: Write all page data to individual files
+        if self.bufferpool:
+            self.bufferpool.write_all_pages()
 
-            # base/tail pages flush
-            for page_range_id, pr in table.page_range_directory.items():
-                base_counts = []
-                tail_counts = []
+        # Step 2: Collect all pages and strip data for metadata pickle
+        all_pages = self._collect_all_pages()
+        saved_data = {}
+        for page in all_pages:
+            saved_data[page.page_id] = page.data
+            page.data = None    # Don't duplicate data in pickle
 
-                # base
-                for cid in range(total_col):
-                    base_counts.append(len(pr.base_pages[cid]))
-                    for pid, pg in enumerate(pr.base_pages[cid]):
-                        pfile = self._page_file(table.name, False, page_range_id, cid, pid)
-                        self._write_page_bytes(pfile, pg.to_bytes())
+        # Strip indexes (rebuilt on open)
+        saved_indexes = {}
+        for table in self.tables:
+            saved_indexes[table.name] = table.index
+            table.index = None
 
-                # tail
-                for cid in range(total_col):
-                    tail_counts.append(len(pr.tail_pages[cid]))
-                    for pid, pg in enumerate(pr.tail_pages[cid]):
-                        pfile = self._page_file(table.name, True, page_range_id, cid, pid)
-                        self._write_page_bytes(pfile, pg.to_bytes())
+        db_data = {
+            'tables': self.tables,
+            'max_page_id': Page._next_id,
+        }
 
-                page_ranges_meta[str(page_range_id)] = {
-                    "base_pages_per_col": base_counts,
-                    "tail_pages_per_col": tail_counts
-                }
+        db_file = os.path.join(self.path, 'db.pkl')
+        with open(db_file, 'wb') as f:
+            pickle.dump(db_data, f)
 
-            # page_directory
-            page_dir_meta = {
-                str(rid): {
-                    "page_range_number": entry.page_range_number,
-                    "is_base": entry.is_base,
-                    "data_locations": [
-                        [coord.page_number, coord.offset] if coord is not None else None
-                        for coord in entry.data_locations
-                    ]
-                }
-                for rid, entry in table.page_directory.items()
-            }
+        # Restore in-memory state
+        for page in all_pages:
+            page.data = saved_data[page.page_id]
+        for table in self.tables:
+            table.index = saved_indexes[table.name]
 
-            meta = {
-                "name": table.name,
-                "num_columns": table.num_columns,
-                "key": table.key,
-                "page_ranges": page_ranges_meta,
-                "page_directory": page_dir_meta,
-                "next_rid": getattr(table, "next_rid", 1)
-            }
-
-            with open(self._meta_file(table.name), "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
-
-        # memory clear
-        self.tables.clear()
-        self._table_map.clear()
-
+    def _collect_all_pages(self):
+        """Gather every Page object across all tables."""
+        pages = []
+        for table in self.tables:
+            for pr in table.page_range_directory.values():
+                for col_pages in pr.base_pages:
+                    pages.extend(col_pages)
+                for col_pages in pr.tail_pages:
+                    pages.extend(col_pages)
+        return pages
 
     """
     # Creates a new table
@@ -196,47 +152,25 @@ class Database():
     :param key: int             #Index of table key in columns
     """
     def create_table(self, name, num_columns, key_index):
-        # for safety we are going to lookup for search name if it's already exists
         if name in self._table_map:
             raise ValueError(f"Table '{name}' exists.")
-
         table = Table(name, num_columns, key_index)
-
-        # for Milestone 2 keep directory
-        self._ensure_table_dirs(name)
-    
-        # for Milestone 2 matian RID persistence
-        table.next_rid = 1
-
-        # add the table in databases and save it.
         self.tables.append(table)
         self._table_map[name] = table
-
         return table
 
-    
     """
     # Deletes the specified table
     """
     def drop_table(self, name):
-        # delete table entry
-        if name in self._table_map:
-            del self._table_map[name]
-
-        # Iterate throught the list of tables
         for i, table in enumerate(self.tables):
-            # check if the table found or not
             if table.name == name:
-                # pop table from the stock
                 self.tables.pop(i)
                 return True
-        # if the table not match then 
         return False
-                
 
     """
     # Returns table with the passed name
     """
     def get_table(self, name):
-        # 0(1) averageg lookup to improve time complexity
-        return self._table_map.get(name,None)
+        return self._table_map.get(name, None)
