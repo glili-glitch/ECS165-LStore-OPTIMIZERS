@@ -49,6 +49,7 @@ class Table:
         self.page_range_directory = {}
         self._update_count = 0
         self._merge_lock = threading.Lock()
+        self.deleted_rids = set()
 
     def __getstate__(self):
         """Exclude unpicklable threading.Lock from serialization."""
