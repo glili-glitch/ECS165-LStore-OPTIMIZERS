@@ -3,3 +3,5 @@ __pycache__/
 Grades/
 pages/
 db.pkl
+*.bin
+ECS165/pages/
