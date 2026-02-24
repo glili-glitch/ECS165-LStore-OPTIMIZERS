@@ -85,26 +85,18 @@ class BufferPool:
                     break
                 continue
             self._evict(pid)
-            # # without creating a full list and get the oldest page(LRU)
-            # evicted = False
-
-            # # we can check oldest are pinned
-            # for pid in list(self.pool.keys()):       # Iterate LRU → MRU
-            #     if not self.is_pinned(pid):
-            #         self._evict(pid)
-            #         evicted = True
-            #         break
-            # if not evicted:
-            #     break   # All pages pinned — cannot evict
 
     def _evict(self, page_id):
         """Evict a single page. Flush to disk first if dirty."""
         page = self.pool.get(page_id)
         if page is None:
             return
+        if self.is_pinned(page_id):
+            return
         if page_id in self.dirty_pages:
             self._write_page_to_disk(page)
             self.dirty_pages.discard(page_id)
+        self.pin_counts.pop(page_id, None)
         page.data = None                            # Free memory
         del self.pool[page_id]
 
