@@ -8,7 +8,8 @@ db.open('./ECS165')
 
 # Getting the existing Grades table
 grades_table = db.get_table('Grades')
-
+if grades_table is None:
+    grades_table = db.create_table('Grades', 5, 0)
 # create a query class for the grades table
 query = Query(grades_table)
 
