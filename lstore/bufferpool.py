@@ -73,9 +73,16 @@ class BufferPool:
 
     def _ensure_capacity(self):
         """Evict LRU unpinned pages until pool is under capacity."""
-        while len(self.pool) >= self.pool_size:
+        while len(self.pool) > self.pool_size:
+            # without creating a full list and get the oldest page(LRU)
+            it = iter(self.pool) 
             evicted = False
-            for pid in list(self.pool.keys()):       # Iterate LRU → MRU
+
+            # we can check oldest are pinned
+            for _ in range(len(self.pool)):
+                pid = next(it)
+
+            # for pid in list(self.pool.keys()):       # Iterate LRU → MRU
                 if not self.is_pinned(pid):
                     self._evict(pid)
                     evicted = True
@@ -115,7 +122,10 @@ class BufferPool:
         page_path = self._get_page_path(page.page_id)
         if page_path:
             with open(page_path, 'wb') as f:
-                f.write(bytes(page.data))
+                # optimization write the byt directly
+                f.write(page.data)
+        if self.data_file:
+            pass
 
     def _get_page_path(self, page_id):
         if self.disk_path is None:
