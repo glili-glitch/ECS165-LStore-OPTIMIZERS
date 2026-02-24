@@ -34,10 +34,12 @@ class Index:
         idx = self.indices[column]
         if value in idx:
             rids_set = idx[value]
-            rids_set.discard(rid)
-            if rids_set == set():
-                rids_set = None
-            idx[value] = rids_set
+            if rids_set is not None:
+                rids_set.discard(rid)
+                if len(rids_set) == 0:
+                    del idx[value]
+                else:
+                    idx[value] = rids_set
         else:
             return False
         return True
@@ -46,7 +48,9 @@ class Index:
         if self.indices[column] is None:
             return None
         idx = self.indices[column]
-        rids = idx.get(value, set())
+        rids = idx.get(value, None)
+        if rids is None:
+            return []
         return list(rids)
 
 
