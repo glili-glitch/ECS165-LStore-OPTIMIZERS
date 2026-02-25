@@ -117,6 +117,7 @@ class BufferPool:
             with open(page_path, 'wb') as f:
                 # optimization write the byt directly
                 f.write(bytes(page.data))
+        if self.date_file
 
     def _get_page_path(self, page_id):
         if self.disk_path is None:
