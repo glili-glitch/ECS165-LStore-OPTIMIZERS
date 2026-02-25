@@ -6,7 +6,6 @@ from lstore.index import Index
 from lstore.bufferpool import BufferPool
 from lstore.page import Page
 
-
 class Database():
 
     def __init__(self):
@@ -46,7 +45,7 @@ class Database():
                 self.tables.append(table)
                 self._table_map[table.name] = table
 
-                # Reset TPS for all page ranges
+                # Reset TPS for all page ranges (merge state doesn't survive restart)
                 for pr in table.page_range_directory.values():
                     pr.tps = 0
 
@@ -103,16 +102,16 @@ class Database():
             if hasattr(table, 'wait_for_merge'):
                 table.wait_for_merge()
 
-        # Write all page data
+        # Step 1: Write all page data to individual files
         if self.bufferpool:
             self.bufferpool.write_all_pages()
 
-        # Strip page data for pickle
+        # Step 2: Collect all pages and strip data for metadata pickle
         all_pages = self._collect_all_pages()
         saved_data = {}
         for page in all_pages:
             saved_data[page.page_id] = page.data
-            page.data = None
+            page.data = None    # Don't duplicate data in pickle
 
         # Strip indexes (rebuilt on open)
         saved_indexes = {}
@@ -146,25 +145,32 @@ class Database():
                     pages.extend(col_pages)
         return pages
 
+    """
     # Creates a new table
+    :param name: string         #Table name
+    :param num_columns: int     #Number of Columns: all columns are integer
+    :param key: int             #Index of table key in columns
+    """
     def create_table(self, name, num_columns, key_index):
-        # If table already exists, return it (prevents tester crash)
         if name in self._table_map:
-            return self._table_map[name]
-
+            raise ValueError(f"Table '{name}' exists.")
         table = Table(name, num_columns, key_index)
         self.tables.append(table)
         self._table_map[name] = table
         return table
 
+    """
     # Deletes the specified table
+    """
     def drop_table(self, name):
-        table = self._table_map.pop(name, None)
-        if table is None:
-            return False
-        self.tables = [t for t in self.tables if t.name != name]
-        return True
+        for i, table in enumerate(self.tables):
+            if table.name == name:
+                self.tables.pop(i)
+                return True
+        return False
 
+    """
     # Returns table with the passed name
+    """
     def get_table(self, name):
         return self._table_map.get(name, None)
