@@ -10,7 +10,7 @@ class Index:
         self.table = table
         # Key column should be indexed by default (commonly column 0).
         # If your table defines key column differently, change 0 to that column index.
-        self.create_index(0)
+        self.create_index(table.key)
         pass
 
 
