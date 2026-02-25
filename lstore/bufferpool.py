@@ -74,29 +74,23 @@ class BufferPool:
     def _ensure_capacity(self):
         """Evict LRU unpinned pages until pool is under capacity."""
         while len(self.pool) >= self.pool_size:
-            if not self.pool:
-                break
-            pid, page = next(iter(self.pool.items())) # this is the current LRU
-            if self.is_pinned(pid):
-                # pinned LRU to MRU, no re-checking it
-                self.pool.move_to_end(pid)
-                # if everthing is pinned, then stop the loop
-                if all(self.is_pinned(x) for x in self.pool.keys()):
+            evicted = False
+            for pid in list(self.pool.keys()):      # Iterate LRU -> MRU
+                if not self.is_pinned(pid):
+                    self._evict(pid)
+                    evicted = True
                     break
-                continue
-            self._evict(pid)
+            if not evicted:
+                break
 
     def _evict(self, page_id):
         """Evict a single page. Flush to disk first if dirty."""
         page = self.pool.get(page_id)
         if page is None:
             return
-        if self.is_pinned(page_id):
-            return
         if page_id in self.dirty_pages:
             self._write_page_to_disk(page)
-            self.dirty_pages.discard(page_id)
-        self.pin_counts.pop(page_id, None)
+            self.dirty_pages.discard(page_id)        
         page.data = None                            # Free memory
         del self.pool[page_id]
 
