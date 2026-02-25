@@ -49,7 +49,6 @@ class Table:
         self.page_range_directory = {}
         self._update_count = 0
         self._merge_lock = threading.Lock()
-        
 
     def __getstate__(self):
         """Exclude unpicklable threading.Lock from serialization."""
@@ -207,8 +206,65 @@ class Table:
         return columns 
 
     def get_column_value(self, rid, column_number, relative_version=0):
-        full_record_columns = self.construct_full_record(rid, relative_version)
-        return full_record_columns[column_number]
+        # OPTIMIZED: Don't construct the full record just to get one column.
+        # This saves massive I/O during sum() and update().
+        base_page_directory_entry = self.page_directory[rid]
+        base_page_range_number = base_page_directory_entry.page_range_number
+        base_data_locations = base_page_directory_entry.data_locations
+        base_page_range = self.page_range_directory[base_page_range_number]
+
+        base_rid_page_number = base_data_locations[RID_COLUMN].page_number
+        base_rid_offset = base_data_locations[RID_COLUMN].offset
+        base_rid_page = base_page_range.base_pages[RID_COLUMN][base_rid_page_number]
+        base_rid = base_rid_page.read(base_rid_offset // page.COLUMN_ENTRY_SIZE)
+
+        base_indirection_loc = base_data_locations[INDIRECTION_COLUMN]
+        indirection_rid = None
+        if base_indirection_loc is not None:
+            indirection_rid_page_number = base_indirection_loc.page_number
+            indirection_rid_offset = base_indirection_loc.offset
+            indirection_rid_page = base_page_range.base_pages[INDIRECTION_COLUMN][indirection_rid_page_number]
+            indirection_rid = indirection_rid_page.read(indirection_rid_offset // page.COLUMN_ENTRY_SIZE)
+
+        version_num = 0
+        while (indirection_rid != base_rid and indirection_rid != None):
+            if relative_version == 0 and base_page_range.tps > 0 and indirection_rid <= base_page_range.tps:
+                break
+
+            current_page_directory_entry = self.page_directory[indirection_rid]
+            current_page_range_number = current_page_directory_entry.page_range_number
+            current_is_base = current_page_directory_entry.is_base
+            current_data_locations = current_page_directory_entry.data_locations
+
+            if version_num >= relative_version:
+                # Read ONLY the requested column from this tail record
+                data_loc = current_data_locations[column_number + 3]
+                if data_loc is not None:
+                    current_page_range = self.page_range_directory[current_page_range_number]
+                    pages = current_page_range.base_pages if current_is_base else current_page_range.tail_pages
+                    p = pages[column_number + 3][data_loc.page_number]
+                    val = p.read(data_loc.offset // page.COLUMN_ENTRY_SIZE)
+                    if val is not None:
+                        return val
+
+            # Follow indirection
+            current_page_range = self.page_range_directory[current_page_range_number]
+            pages = current_page_range.base_pages if current_is_base else current_page_range.tail_pages
+            indirection_data_loc = current_data_locations[INDIRECTION_COLUMN]
+            if indirection_data_loc is None:
+                break
+            indirection_rid_page_number = indirection_data_loc.page_number
+            indirection_rid_offset = indirection_data_loc.offset
+            indirection_rid_page = pages[INDIRECTION_COLUMN][indirection_rid_page_number]
+            indirection_rid = indirection_rid_page.read(indirection_rid_offset // page.COLUMN_ENTRY_SIZE)
+            version_num += 1
+
+        # Fallback to base page if not found in tail chain
+        data_loc = base_data_locations[column_number + 3]
+        if data_loc is not None:
+            p = base_page_range.base_pages[column_number + 3][data_loc.page_number]
+            return p.read(data_loc.offset // page.COLUMN_ENTRY_SIZE)
+        return None
 
     def trigger_merge_check(self):
         """Called after each update. Triggers background merge when threshold is reached."""
