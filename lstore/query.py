@@ -52,7 +52,8 @@ class Query:
     """
     def insert(self, *columns):
 
-        if len(self.table.index.locate(self.table.key, columns[self.table.key])) > 0:
+        existing = self.table.index.locate(self.table.key, columns[self.table.key])
+        if existing is not None and len(existing) > 0:
             return False
     
         # check if col if is correct number
@@ -102,8 +103,20 @@ class Query:
     """
     def select(self, search_key, search_key_index, projected_columns_index):
         rid_list = self.table.index.locate(search_key_index, search_key)
+        # If no index exists on this column, fall back to full table scan
+        if rid_list is None:
+            rid_list = []
+            for rid, entry in self.table.page_directory.items():
+                if not entry.is_base:
+                    continue
+                columns = self.table.construct_full_record(rid)
+                if columns[search_key_index] == search_key:
+                    rid_list.append(rid)
         record_list = []
         for rid in rid_list:
+            # Skip RIDs that were deleted (no longer in page_directory)
+            if rid not in self.table.page_directory:
+                continue
             columns = self.table.construct_full_record(rid)
             primary_key = self.table.get_primary_key(rid)
             new_columns = []
@@ -126,8 +139,20 @@ class Query:
     """
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
         rid_list = self.table.index.locate(search_key_index, search_key)
+        # If no index exists on this column, fall back to full table scan
+        if rid_list is None:
+            rid_list = []
+            for rid, entry in self.table.page_directory.items():
+                if not entry.is_base:
+                    continue
+                columns = self.table.construct_full_record(rid)
+                if columns[search_key_index] == search_key:
+                    rid_list.append(rid)
         record_list = []
         for rid in rid_list:
+            # Skip RIDs that were deleted
+            if rid not in self.table.page_directory:
+                continue
             columns = self.table.construct_full_record(rid, relative_version * -1)
             primary_key = self.table.get_primary_key(rid)
             new_columns = []
@@ -262,10 +287,13 @@ class Query:
         sum = 0
         has_records = False
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(0, key)
-            if rids is None:
+            rids = self.table.index.locate(self.table.key, key)
+            if rids is None or len(rids) == 0:
                 continue
             rid = rids[0]
+            # Skip deleted records
+            if rid not in self.table.page_directory:
+                continue
             has_records = True
             column_value = self.table.get_column_value(rid, aggregate_column_index)
             if column_value is None:
@@ -289,7 +317,7 @@ class Query:
         has_records = False
         column_values = []
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(0, key)
+            rids = self.table.index.locate(self.table.key, key)
             if rids is None or len(rids) == 0:
                 continue
             rid = rids[0]
