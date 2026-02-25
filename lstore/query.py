@@ -35,8 +35,12 @@ class Query:
             return False
         base_rid = rids[0]
         record = self.table.construct_full_record(base_rid)
-        # Update with all None unsets the values in the index automatically
+        original_columns = record
+
         self.update(primary_key, *[None] * self.table.num_columns)
+
+        for i, column in enumerate(original_columns):
+            self.table.index.remove_from_index(i, column, base_rid)
 
         del self.table.page_directory[base_rid]
         return True
@@ -48,8 +52,7 @@ class Query:
     """
     def insert(self, *columns):
 
-        existing = self.table.index.locate(self.table.key, columns[self.table.key])
-        if existing is not None and len(existing) > 0:
+        if len(self.table.index.locate(self.table.key, columns[self.table.key])) > 0:
             return False
     
         # check if col if is correct number
@@ -99,20 +102,8 @@ class Query:
     """
     def select(self, search_key, search_key_index, projected_columns_index):
         rid_list = self.table.index.locate(search_key_index, search_key)
-        # If no index exists on this column, fall back to full table scan
-        if rid_list is None:
-            rid_list = []
-            for rid, entry in self.table.page_directory.items():
-                if not entry.is_base:
-                    continue
-                columns = self.table.construct_full_record(rid)
-                if columns[search_key_index] == search_key:
-                    rid_list.append(rid)
         record_list = []
         for rid in rid_list:
-            # Skip RIDs that were deleted (no longer in page_directory)
-            if rid not in self.table.page_directory:
-                continue
             columns = self.table.construct_full_record(rid)
             primary_key = self.table.get_primary_key(rid)
             new_columns = []
@@ -135,20 +126,8 @@ class Query:
     """
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
         rid_list = self.table.index.locate(search_key_index, search_key)
-        # If no index exists on this column, fall back to full table scan
-        if rid_list is None:
-            rid_list = []
-            for rid, entry in self.table.page_directory.items():
-                if not entry.is_base:
-                    continue
-                columns = self.table.construct_full_record(rid)
-                if columns[search_key_index] == search_key:
-                    rid_list.append(rid)
         record_list = []
         for rid in rid_list:
-            # Skip RIDs that were deleted
-            if rid not in self.table.page_directory:
-                continue
             columns = self.table.construct_full_record(rid, relative_version * -1)
             primary_key = self.table.get_primary_key(rid)
             new_columns = []
@@ -198,32 +177,28 @@ class Query:
         base_schema_page_number = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
         base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
         base_schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
-        # Read base schema as integer
-        base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
-        
-        # Restore the accidentally deleted indirection read:
+        base_schema = format(base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE), f"0{self.table.num_columns}b")
+
         base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
-        
-        # Calculate new schema using bitwise operations
-        schema_int = 0
-        new_base_schema_int = base_schema_int
-        
+
+        #schema encoding
+
+        schema = ""
+        new_base_schema = base_schema
         for i, v in enumerate(columns):
-            if v is not None:
-                # Set the i-th bit from the left (assuming MSB corresponds to index 0)
-                bit_mask = 1 << (self.table.num_columns - 1 - i)
-                schema_int |= bit_mask
-                new_base_schema_int |= bit_mask
+            if v is None:
+                schema += "0"
+            else:
+                schema += "1"
+                new_base_schema = new_base_schema[:i] + "1" + new_base_schema[i+1:]
         
         if columns == [None] * self.table.num_columns:
-            new_base_schema_int = 0
-            schema_int = 0
-            
-        base_schema_is_zero = (base_schema_int == 0)
+            new_base_schema = '0' * self.table.num_columns
+            schema = '0' * self.table.num_columns
 
         copy_tail_record = None
 
-        if base_schema_is_zero and columns != [None] * self.table.num_columns:
+        if base_schema == '0' * self.table.num_columns and columns != [None] * self.table.num_columns:
             copy_columns = [None] * self.table.num_columns
             for i, column in enumerate(columns):
                 if column is not None:
@@ -235,12 +210,12 @@ class Query:
                 else:
                     copy_columns[i] = None 
             copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
-            copy_all_columns = [copy_tail_record.rid, base_rid, schema_int] + copy_columns
+            copy_all_columns = [copy_tail_record.rid, base_rid, int(schema, 2)] + copy_columns
             self.table.add_record(base_page_range_number, False, *copy_all_columns, record=copy_tail_record)
         
         tail_record = Record(next(_rid_counter), primary_key, list(columns))
         tail_indirection = None
-        if base_schema_is_zero and columns != [None] * self.table.num_columns:
+        if base_schema == '0' * self.table.num_columns and columns != [None] * self.table.num_columns:
             tail_indirection = copy_tail_record.rid
         else:
             tail_indirection = base_indirection
@@ -248,7 +223,7 @@ class Query:
         if columns == [None] * self.table.num_columns:
             tail_indirection = base_rid
 
-        all_columns = [tail_record.rid, tail_indirection, schema_int] + list(columns)
+        all_columns = [tail_record.rid, tail_indirection, int(schema, 2)] + list(columns)
         self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
 
         if base_indirection_offset == page.PAGE_SIZE:
@@ -258,18 +233,17 @@ class Query:
             base_indirection_offset = 0
 
         base_indirection_page.write(tail_record.rid, base_indirection_offset)
-        base_schema_page.write(new_base_schema_int, base_schema_offset)
+        base_schema_page.write(int(new_base_schema, 2), base_schema_offset)
 
         base_page_directory_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(base_indirection_page_number, base_indirection_offset)
 
-        # Optimize index updates: only update indices for columns that actually changed
-        for i, new_val in enumerate(columns):
-            if new_val is not None:
-                # Get the previous value for this specific column
-                prev_val = self.table.get_column_value(base_rid, i, 1)
-                if prev_val is not None and new_val != prev_val:
-                    self.table.index.remove_from_index(i, prev_val, base_rid)
-                    self.table.index.add_to_index(i, new_val, base_rid)
+        current_columns = self.table.construct_full_record(base_rid)
+        previous_columns = self.table.construct_full_record(base_rid, 1)
+
+        for i, (curr_val, prev_val) in enumerate(zip(current_columns, previous_columns)):
+            if curr_val != prev_val:
+                self.table.index.remove_from_index(i, prev_val, base_rid)  # Remove OLD value
+                self.table.index.add_to_index(i, curr_val, base_rid)       # Add NEW value
 
         # Check if background merge should be triggered
         self.table.trigger_merge_check()
@@ -288,13 +262,10 @@ class Query:
         sum = 0
         has_records = False
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(self.table.key, key)
-            if rids is None or len(rids) == 0:
+            rids = self.table.index.locate(0, key)
+            if rids is None:
                 continue
             rid = rids[0]
-            # Skip deleted records
-            if rid not in self.table.page_directory:
-                continue
             has_records = True
             column_value = self.table.get_column_value(rid, aggregate_column_index)
             if column_value is None:
@@ -318,7 +289,7 @@ class Query:
         has_records = False
         column_values = []
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(self.table.key, key)
+            rids = self.table.index.locate(0, key)
             if rids is None or len(rids) == 0:
                 continue
             rid = rids[0]
