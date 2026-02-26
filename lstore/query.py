@@ -3,392 +3,350 @@ from lstore import page
 from lstore.table import Table, Record
 from lstore.index import Index
 from itertools import count
-import functools
-
 _rid_counter = count(1)
+
 
 
 class Query:
     """
-    Creates a Query object that can perform different queries on the specified table
+    # Creates a Query object that can perform different queries on the specified table 
     Queries that fail must return False
     Queries that succeed should return the result or True
     Any query that crashes (due to exceptions) should return False
     """
-
-    __slots__ = ('table', '_num_columns', '_key_index', '_page_dir_cache')
-
     def __init__(self, table):
         self.table = table
-        self._num_columns = table.num_columns
-        self._key_index = table.key
-        self._page_dir_cache = {}  # Cache for frequently accessed page directory entries
+        pass
 
+    
     """
-    Read a record with specified RID
-    Returns True upon succesful deletion
-    Return False if record doesn't exist or is locked due to 2PL
+    # internal Method
+    # Read a record with specified RID
+    # Returns True upon succesful deletion
+    # Return False if record doesn't exist or is locked due to 2PL
     """
     def delete(self, primary_key):
+        # use index to get RID of base record
+        # call update with all columns set to None to insert tail record of all nulls
+        # remove primary key from index, and any mapping from the old column values to RID in other indices
+        # remove RID of base record from page directory
         rids = self.table.index.locate(self.table.key, primary_key)
+        if not rids: 
+            return False
+        base_rid = rids[0]
+        record = self.table.construct_full_record(base_rid)
+        # Update with all None unsets the values in the index automatically
+        self.update(primary_key, *[None] * self.table.num_columns)
+
+        del self.table.page_directory[base_rid]
+        return True
+
+    """
+    # Insert a record with specified columns
+    # Return True upon succesful insertion
+    # Returns False if insert fails for whatever reason
+    """
+    def insert(self, *columns):
+
+        existing = self.table.index.locate(self.table.key, columns[self.table.key])
+        if existing is not None and len(existing) > 0:
+            return False
+    
+        # check if col if is correct number
+        if len(columns) != self.table.num_columns:
+            return False
+
+        # use the key to find a pageRange
+        primary_key = columns[self.table.key]
+        # calculate range number using primary key
+        page_range_number = primary_key // table.NUM_RECORDS_PER_RANGE
+
+        # if there isn't page number then we build a new page
+        if page_range_number not in self.table.page_range_directory:
+            self.table.add_page_range(page_range_number)
+
+        page_range = self.table.page_range_directory[page_range_number]
+
+        # allocate  RID
+        rid = next(_rid_counter)
+        # print(rid)
+
+        # schema for base record
+        schema_encoding = '0' * self.table.num_columns
+                    
+        # create new record object with new RID
+        # call add record in table class
+        record = Record(rid, primary_key, list(columns))
+        # construct variable that holds all columns including metadata
+        all_columns = [rid, None, int(schema_encoding, 2)] + list(columns)
+
+        self.table.add_record(page_range_number, True, *all_columns, record=record)
+        
+        for i, column in enumerate(columns):
+            self.table.index.add_to_index(i, column, rid)
+
+        return True
+
+    """
+    # Read matching record with specified search key
+
+    # :param search_key: the value you want to search based on
+    # :param search_key_index: the column index you want to search based on
+    # :param projected_columns_index: what columns to return. array of 1 or 0 values.
+    # Returns a list of Record objects upon success
+    # Returns False if record locked by TPL
+    # Assume that select will never be called on a key that doesn't exist
+    """
+    def select(self, search_key, search_key_index, projected_columns_index):
+        rid_list = self.table.index.locate(search_key_index, search_key)
+        # If no index exists on this column, fall back to full table scan
+        if rid_list is None:
+            rid_list = []
+            for rid, entry in self.table.page_directory.items():
+                if not entry.is_base:
+                    continue
+                columns = self.table.construct_full_record(rid)
+                if columns[search_key_index] == search_key:
+                    rid_list.append(rid)
+        record_list = []
+        for rid in rid_list:
+            # Skip RIDs that were deleted (no longer in page_directory)
+            if rid not in self.table.page_directory:
+                continue
+            columns = self.table.construct_full_record(rid)
+            primary_key = self.table.get_primary_key(rid)
+            new_columns = []
+            for i in range(len(projected_columns_index)):
+                if projected_columns_index[i] == 0:
+                    continue
+                new_columns.append(columns[i])
+            record_list.append(Record(rid, primary_key, new_columns))
+        return record_list
+    
+    """
+    # Read matching record with specified search key
+    # :param search_key: the value you want to search based on
+    # :param search_key_index: the column index you want to search based on
+    # :param projected_columns_index: what columns to return. array of 1 or 0 values.
+    # :param relative_version: the relative version of the record you need to retreive.
+    # Returns a list of Record objects upon success
+    # Returns False if record locked by TPL
+    # Assume that select will never be called on a key that doesn't exist
+    """
+    def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
+        rid_list = self.table.index.locate(search_key_index, search_key)
+        # If no index exists on this column, fall back to full table scan
+        if rid_list is None:
+            rid_list = []
+            for rid, entry in self.table.page_directory.items():
+                if not entry.is_base:
+                    continue
+                columns = self.table.construct_full_record(rid)
+                if columns[search_key_index] == search_key:
+                    rid_list.append(rid)
+        record_list = []
+        for rid in rid_list:
+            # Skip RIDs that were deleted
+            if rid not in self.table.page_directory:
+                continue
+            columns = self.table.construct_full_record(rid, relative_version * -1)
+            primary_key = self.table.get_primary_key(rid)
+            new_columns = []
+            for i in range(len(projected_columns_index)):
+                if projected_columns_index[i] == 0:
+                    continue
+                new_columns.append(columns[i])
+            record_list.append(Record(rid, primary_key, new_columns))
+        return record_list
+    
+    """
+    # Update a record with specified key and columns
+    # Returns True if update is succesful
+    # Returns False if no records exist with given key or if the target record cannot be accessed due to 2PL locking
+    """
+    def update(self, primary_key, *columns):
+        # IMPORTANT: must check if columns are all set to null, if so then you are doing a delete operation and SE should be all 0's
+        # use index to get RID of base record
+        # use page directory to get data locations of base record
+        # create new tail record object
+        # construct variable that holds all columns including metadata 
+        # update indirection pointer and schema encoding of base record 
+        # call add record in table class 
+        # (note: if record is being updated for the first time, must add copy of base record as tail record)
+
+        rids = self.table.index.locate(self.table.key,primary_key)
         if not rids:
             return False
         base_rid = rids[0]
 
-        # OPTIMIZATION: Direct tombstone without full update
-        # Instead of calling update with all Nones, do minimal work
-        
-        # Get base entry
-        base_entry = self.table.page_directory.get(base_rid)
-        if not base_entry:
+        # Primary key cannot be updated. Reject if the update dictionary includes a non-None value for the PK column.
+        if columns[self.table.key] is not None:
             return False
-            
-        # Mark as deleted by updating indirection to point to itself
-        base_page_range_number = base_entry.page_range_number
+
+        base_page_directory_entry = self.table.page_directory[base_rid]
+        base_page_range_number = base_page_directory_entry.page_range_number
         base_page_range = self.table.page_range_directory[base_page_range_number]
-        base_data_locations = base_entry.data_locations
-        
-        # Update indirection to point to itself (tombstone marker)
-        if base_data_locations[table.INDIRECTION_COLUMN]:
-            indirection_page_num = base_data_locations[table.INDIRECTION_COLUMN].page_number
-            indirection_offset = base_data_locations[table.INDIRECTION_COLUMN].offset
-            indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_num]
-            indirection_page.write(base_rid, indirection_offset)  # Point to self
-        
-        # Update schema to 0 (all columns invalid)
-        schema_page_num = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
-        schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
-        schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_page_num]
-        schema_page.write(0, schema_offset)
-        
-        # Remove from indexes
-        for i in range(self._num_columns):
-            val = self.table.get_column_value(base_rid, i)
-            if val is not None:
-                self.table.index.remove_from_index(i, val, base_rid)
-        
-        # Remove from page directory (optional - could keep with tombstone flag)
-        # del self.table.page_directory[base_rid]
-        
-        self.table.trigger_merge_check()
-        return True
-
-    """
-    Insert a record with specified columns
-    Return True upon succesful insertion
-    Returns False if insert fails for whatever reason
-    """
-    def insert(self, *columns):
-        # Early validation
-        if len(columns) != self._num_columns:
-            return False
-
-        primary_key = columns[self._key_index]
-        
-        # OPTIMIZATION: Quick existence check
-        existing = self.table.index.locate(self.table.key, primary_key)
-        if existing:
-            return False
-
-        # Calculate page range
-        page_range_number = primary_key // table.NUM_RECORDS_PER_RANGE
-
-        # Lazy page range creation
-        page_range = self.table.page_range_directory.get(page_range_number)
-        if page_range is None:
-            page_range = self.table.add_page_range(page_range_number)
-
-        rid = next(_rid_counter)
-
-        schema_encoding = 0  # OPTIMIZATION: Use int directly instead of bit string
-        record = Record(rid, primary_key, list(columns))
-
-        # Batch insert into page range
-        all_columns = [rid, None, schema_encoding] + list(columns)
-        self.table.add_record(page_range_number, True, *all_columns, record=record)
-
-        # Batch index updates
-        indices_to_update = [(i, columns[i], rid) for i in range(self._num_columns)]
-        for i, val, rid in indices_to_update:
-            self.table.index.add_to_index(i, val, rid)
-
-        return True
-
-    def _scan_table_for_key(self, search_key, search_key_index):
-        """Helper method for full table scan when index missing"""
-        rid_list = []
-        page_dir = self.table.page_directory
-        
-        for rid, entry in page_dir.items():
-            if not entry.is_base:
-                continue
-            
-            # OPTIMIZATION: Direct column access without constructing full record
-            # This assumes get_column_value is efficient
-            col_val = self.table.get_column_value(rid, search_key_index)
-            if col_val == search_key:
-                rid_list.append(rid)
-                
-        return rid_list
-
-    def _build_record_list(self, rid_list, projected_columns_index, version=0):
-        """Helper to build record list with projection"""
-        record_list = []
-        page_dir = self.table.page_directory
-        
-        for rid in rid_list:
-            entry = page_dir.get(rid)
-            if not entry or not entry.is_base:
-                continue
-
-            # OPTIMIZATION: Only get needed columns
-            if version == 0:
-                columns = self.table.construct_full_record(rid)
-            else:
-                columns = self.table.construct_full_record(rid, version)
-            
-            primary_key = columns[self._key_index]
-
-            # OPTIMIZATION: List comprehension for projection
-            new_columns = [columns[i] for i in range(self._num_columns) 
-                          if projected_columns_index[i] != 0]
-
-            record_list.append(Record(rid, primary_key, new_columns))
-        
-        return record_list
-
-    """
-    Read matching record with specified search key
-    """
-    def select(self, search_key, search_key_index, projected_columns_index):
-        # Try index first
-        rid_list = self.table.index.locate(search_key_index, search_key)
-        
-        # Fall back to scan if needed
-        if rid_list is None:
-            rid_list = self._scan_table_for_key(search_key, search_key_index)
-
-        return self._build_record_list(rid_list, projected_columns_index)
-
-    """
-    Read matching record with specified search key (versioned)
-    """
-    def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
-        rid_list = self.table.index.locate(search_key_index, search_key)
-        
-        if rid_list is None:
-            rid_list = self._scan_table_for_key(search_key, search_key_index)
-
-        # OPTIMIZATION: Pre-compute version once
-        version = relative_version * -1
-        return self._build_record_list(rid_list, projected_columns_index, version)
-
-    def _prepare_update_data(self, base_rid, columns):
-        """Helper to prepare data for update"""
-        base_entry = self.table.page_directory[base_rid]
-        base_page_range_number = base_entry.page_range_number
-        base_page_range = self.table.page_range_directory[base_page_range_number]
-        base_data_locations = base_entry.data_locations
-        
-        # Get base schema
-        schema_coord = base_data_locations[table.SCHEMA_ENCODING_COLUMN]
-        schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_coord.page_number]
-        base_schema_int = schema_page.read(schema_coord.offset // page.COLUMN_ENTRY_SIZE)
-        
-        # Get base indirection
-        indirection_coord = base_data_locations[table.INDIRECTION_COLUMN]
-        if indirection_coord is None:
-            # Create new indirection page if needed
-            indirection_page_num = len(base_page_range.base_pages[table.INDIRECTION_COLUMN]) - 1
-            indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_num]
-            indirection_offset = indirection_page.current_offset
-            base_indirection = None
+        base_data_locations = base_page_directory_entry.data_locations
+        if base_data_locations[table.INDIRECTION_COLUMN] is None:
+            base_indirection_page_number = base_page_range.base_pages[table.INDIRECTION_COLUMN].__len__() - 1
+            base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
+            base_indirection_offset = base_indirection_page.current_offset
         else:
-            indirection_page_num = indirection_coord.page_number
-            indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_num]
-            indirection_offset = indirection_coord.offset
-            base_indirection = indirection_page.read(indirection_offset // page.COLUMN_ENTRY_SIZE)
-            
-        return (base_entry, base_page_range, base_data_locations, 
-                base_schema_int, base_indirection, indirection_page, 
-                indirection_offset, schema_page, schema_coord)
+            base_indirection_page_number = base_data_locations[table.INDIRECTION_COLUMN].page_number
+            base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
+            base_indirection_offset = base_data_locations[table.INDIRECTION_COLUMN].offset
 
-    def _update_indexes(self, base_rid, columns, old_values_cache):
-        """Batch update indexes for changed columns"""
+        base_schema_page_number = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
+        base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
+        base_schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
+        # Read base schema as integer
+        base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
+        
+        # Restore the accidentally deleted indirection read:
+        base_indirection = base_indirection_page.read(base_indirection_offset // page.COLUMN_ENTRY_SIZE)
+        
+        # Calculate new schema using bitwise operations
+        schema_int = 0
+        new_base_schema_int = base_schema_int
+        
+        for i, v in enumerate(columns):
+            if v is not None:
+                # Set the i-th bit from the left (assuming MSB corresponds to index 0)
+                bit_mask = 1 << (self.table.num_columns - 1 - i)
+                schema_int |= bit_mask
+                new_base_schema_int |= bit_mask
+        
+        if columns == [None] * self.table.num_columns:
+            new_base_schema_int = 0
+            schema_int = 0
+            
+        base_schema_is_zero = (base_schema_int == 0)
+
+        copy_tail_record = None
+
+        if base_schema_is_zero and columns != [None] * self.table.num_columns:
+            copy_columns = [None] * self.table.num_columns
+            for i, column in enumerate(columns):
+                if column is not None:
+                    base_page_number = base_data_locations[i + 3].page_number
+                    base_page = base_page_range.base_pages[i + 3][base_page_number]
+                    base_offset = base_data_locations[i + 3].offset
+                    column_value = base_page.read(base_offset // page.COLUMN_ENTRY_SIZE)
+                    copy_columns[i] = column_value
+                else:
+                    copy_columns[i] = None 
+            copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
+            copy_all_columns = [copy_tail_record.rid, base_rid, schema_int] + copy_columns
+            self.table.add_record(base_page_range_number, False, *copy_all_columns, record=copy_tail_record)
+        
+        tail_record = Record(next(_rid_counter), primary_key, list(columns))
+        tail_indirection = None
+        if base_schema_is_zero and columns != [None] * self.table.num_columns:
+            tail_indirection = copy_tail_record.rid
+        else:
+            tail_indirection = base_indirection
+
+        if columns == [None] * self.table.num_columns:
+            tail_indirection = base_rid
+
+        all_columns = [tail_record.rid, tail_indirection, schema_int] + list(columns)
+        self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
+
+        if base_indirection_offset == page.PAGE_SIZE:
+            base_indirection_page_number += 1
+            base_page_range.add_page(True, table.INDIRECTION_COLUMN)
+            base_indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][base_indirection_page_number]
+            base_indirection_offset = 0
+
+        base_indirection_page.write(tail_record.rid, base_indirection_offset)
+        base_schema_page.write(new_base_schema_int, base_schema_offset)
+
+        base_page_directory_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(base_indirection_page_number, base_indirection_offset)
+
+        # Optimize index updates: only update indices for columns that actually changed
         for i, new_val in enumerate(columns):
             if new_val is not None:
-                prev_val = old_values_cache[i]
+                # Get the previous value for this specific column
+                prev_val = self.table.get_column_value(base_rid, i, 1)
                 if prev_val is not None and new_val != prev_val:
                     self.table.index.remove_from_index(i, prev_val, base_rid)
                     self.table.index.add_to_index(i, new_val, base_rid)
 
-    """
-    Update a record with specified key and columns
-    Returns True if update is succesful
-    Returns False if no records exist with given key
-    """
-    def update(self, primary_key, *columns):
-        rids = self.table.index.locate(self.table.key, primary_key)
-        if not rids:
-            return False
-        base_rid = rids[0]
-
-        # PK cannot be updated
-        if columns[self._key_index] is not None:
-            return False
-
-        # OPTIMIZATION: Quick check for no-op update
-        cols = list(columns)
-        all_none = all(v is None for v in cols)
-        
-        # Prepare update data
-        (base_entry, base_page_range, base_data_locations, 
-         base_schema_int, base_indirection, indirection_page, 
-         indirection_offset, schema_page, schema_coord) = self._prepare_update_data(base_rid, cols)
-
-        # Compute schema changes efficiently
-        schema_int = 0
-        new_base_schema_int = base_schema_int
-        
-        # OPTIMIZATION: Bit manipulation for schema
-        for i, v in enumerate(cols):
-            if v is not None:
-                bit_mask = 1 << (self._num_columns - 1 - i)
-                schema_int |= bit_mask
-                new_base_schema_int |= bit_mask
-
-        # Handle delete case
-        if all_none:
-            schema_int = 0
-            new_base_schema_int = 0
-
-        base_schema_is_zero = (base_schema_int == 0)
-        copy_tail_record = None
-
-        # OPTIMIZATION: Cache old values for index updates
-        old_values_cache = {}
-        
-        # First update: create copy tail record (only if NOT delete)
-        if base_schema_is_zero and not all_none:
-            copy_columns = [None] * self._num_columns
-            for i, column in enumerate(cols):
-                if column is not None:
-                    # Cache old value
-                    old_values_cache[i] = self.table.get_column_value(base_rid, i, 1)
-                    copy_columns[i] = old_values_cache[i]
-                else:
-                    copy_columns[i] = None
-
-            copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
-            copy_all_columns = [copy_tail_record.rid, base_rid, schema_int] + copy_columns
-            self.table.add_record(base_page_range.page_range_number, False, *copy_all_columns, record=copy_tail_record)
-        else:
-            # Cache old values for non-copy case
-            for i, v in enumerate(cols):
-                if v is not None:
-                    old_values_cache[i] = self.table.get_column_value(base_rid, i, 1)
-
-        # Create tail record
-        tail_record = Record(next(_rid_counter), primary_key, cols)
-
-        if all_none:
-            tail_indirection = base_rid
-        else:
-            tail_indirection = copy_tail_record.rid if (base_schema_is_zero and copy_tail_record is not None) else base_indirection
-
-        all_columns = [tail_record.rid, tail_indirection, schema_int] + cols
-        self.table.add_record(base_page_range.page_range_number, False, *all_columns, record=tail_record)
-
-        # Ensure indirection page has space
-        if indirection_offset == page.PAGE_SIZE:
-            indirection_page_num += 1
-            base_page_range.add_page(True, table.INDIRECTION_COLUMN)
-            indirection_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_num]
-            indirection_offset = 0
-
-        # Update base indirection + schema
-        indirection_page.write(tail_record.rid, indirection_offset)
-        schema_page.write(new_base_schema_int, schema_coord.offset)
-
-        base_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(indirection_page_num, indirection_offset)
-
-        # Handle index updates
-        if all_none:
-            # Quick delete path
-            self.table.index.remove_from_index(self.table.key, primary_key, base_rid)
-        else:
-            # Batch update indexes
-            self._update_indexes(base_rid, cols, old_values_cache)
-
+        # Check if background merge should be triggered
         self.table.trigger_merge_check()
-        return True
 
+        return True 
+            
     """
-    Sum aggregation over primary key range
+    :param start_range: int         # Start of the key range to aggregate 
+    :param end_range: int           # End of the key range to aggregate 
+    :param aggregate_columns: int  # Index of desired column to aggregate
+    # this function is only called on the primary key.
+    # Returns the summation of the given range upon success
+    # Returns False if no record exists in the given range
     """
     def sum(self, start_range, end_range, aggregate_column_index):
-        total = 0
+        sum = 0
         has_records = False
-        
-        # OPTIMIZATION: Batch key lookup
-        keys = range(start_range, end_range + 1)
-        for key in keys:
+        for key in range(start_range, end_range + 1):
             rids = self.table.index.locate(self.table.key, key)
-            if not rids:
+            if rids is None or len(rids) == 0:
                 continue
             rid = rids[0]
-            
-            entry = self.table.page_directory.get(rid)
-            if not entry or not entry.is_base:
+            # Skip deleted records
+            if rid not in self.table.page_directory:
                 continue
-
             has_records = True
             column_value = self.table.get_column_value(rid, aggregate_column_index)
-            if column_value is not None:
-                total += column_value
-
-        return total if has_records else False
-
+            if column_value is None:
+                column_value = 0
+            sum += column_value
+        if not has_records:
+            return False
+        return sum
+    
     """
-    Sum aggregation over primary key range (versioned)
+    :param start_range: int         # Start of the key range to aggregate 
+    :param end_range: int           # End of the key range to aggregate 
+    :param aggregate_columns: int  # Index of desired column to aggregate
+    :param relative_version: the relative version of the record you need to retreive.
+    # this function is only called on the primary key.
+    # Returns the summation of the given range upon success
+    # Returns False if no record exists in the given range
     """
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version):
-        total = 0
+        sum = 0
         has_records = False
-        version = relative_version * -1
-
-        keys = range(start_range, end_range + 1)
-        for key in keys:
+        column_values = []
+        for key in range(start_range, end_range + 1):
             rids = self.table.index.locate(self.table.key, key)
-            if not rids:
+            if rids is None or len(rids) == 0:
                 continue
             rid = rids[0]
-
-            entry = self.table.page_directory.get(rid)
-            if not entry or not entry.is_base:
-                continue
-
             has_records = True
-            column_value = self.table.get_column_value(rid, aggregate_column_index, version)
-            if column_value is not None:
-                total += column_value
+            column_value = self.table.get_column_value(rid, aggregate_column_index, relative_version * -1)
+            column_values.append(column_value)
+            if column_value is None:
+                column_value = 0
+            sum += column_value
+        if not has_records:
+            return False
+        return sum
 
-        return total if has_records else False
-
+    
     """
-    Increments one column of the record
+    incremenets one column of the record
+    this implementation should work if your select and update queries already work
+    :param key: the primary of key of the record to increment
+    :param column: the column to increment
+    # Returns True is increment is successful
+    # Returns False if no record matches key or if target record is locked by 2PL.
     """
     def increment(self, key, column):
-        # OPTIMIZATION: Direct update without full select
-        rids = self.table.index.locate(self.table.key, key)
-        if not rids:
-            return False
-        
-        rid = rids[0]
-        current_value = self.table.get_column_value(rid, column)
-        if current_value is None:
-            return False
-            
-        updated_columns = [None] * self._num_columns
-        updated_columns[column] = current_value + 1
-        return self.update(key, *updated_columns)
+        r = self.select(key, self.table.key, [1] * self.table.num_columns)[0]
+        if r is not False:
+            updated_columns = [None] * self.table.num_columns
+            updated_columns[column] = r[column] + 1
+            u = self.update(key, *updated_columns)
+            return u
+        return False
