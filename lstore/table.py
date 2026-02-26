@@ -47,7 +47,7 @@ class Table:
         self.index = Index(self)
 
         # Merge controls
-        self.merge_threshold = 1000
+        self.merge_threshold = 5000
         self.page_range_directory = {}
         self._update_count = 0
         self._merge_lock = threading.Lock()
@@ -174,7 +174,7 @@ class Table:
         columns = [x if x is not None else y for x, y in zip(columns, base_cols)]
         return columns
 
-    # ✅ Optimized for latest version: column-only scan
+    # Optimized for latest version: column-only scan
     def get_column_value(self, rid, column_number, relative_version=0):
         # old versions: keep safe full reconstruction
         if relative_version != 0:
@@ -233,7 +233,7 @@ class Table:
         bp = pr.base_pages[column_number + 3][loc.page_number]
         return bp.read(loc.offset // COLUMN_ENTRY_SIZE)
 
-    # ✅ Synchronous merge check (tester-friendly)
+    #  Synchronous merge check 
     def trigger_merge_check(self):
         self._update_count += 1
         if self._update_count < self.merge_threshold:
