@@ -34,10 +34,12 @@ class Transaction:
     
     def abort(self):
         #TODO: do roll-back and any other necessary operations
+        self.db.lock_manager.release_all(self.txn_id)
         return False
 
     
     def commit(self):
         # TODO: commit to database
+        self.db.lock_manager.release_all(self.txn_id)
         return True
 
