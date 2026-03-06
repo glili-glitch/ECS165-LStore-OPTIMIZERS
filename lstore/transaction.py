@@ -1,14 +1,19 @@
+import itertools
 from lstore.table import Table, Record
 from lstore.index import Index
+
+_txn_id_counter = itertools.count(1)
 
 class Transaction:
 
     """
     # Creates a transaction object.
     """
-    def __init__(self):
+    def __init__(self, db = None):
+        self.db = db 
         self.queries = []
-        pass
+        self.txn_id = next(_txn_id_counter)
+        
 
     """
     # Adds the given query to this transaction
@@ -18,13 +23,13 @@ class Transaction:
     # t.add_query(q.update, grades_table, 0, *[None, 1, None, 2, None])
     """
     def add_query(self, query, table, *args):
-        self.queries.append((query, args))
+        self.queries.append((query, table, args))
         # use grades_table for aborting
 
         
     # If you choose to implement this differently this method must still return True if transaction commits or False on abort
     def run(self):
-        for query, args in self.queries:
+        for query, table, args in self.queries:
             result = query(*args)
             # If the query has failed the transaction should abort
             if result == False:
@@ -34,12 +39,14 @@ class Transaction:
     
     def abort(self):
         #TODO: do roll-back and any other necessary operations
-        self.db.lock_manager.release_all(self.txn_id)
+        if self.db is not None and hasattr(self.db, "lock_manager"):
+            self.db.lock_manager.release_all(self.txn_id)
         return False
 
     
     def commit(self):
         # TODO: commit to database
-        self.db.lock_manager.release_all(self.txn_id)
+        if self.db is not None and hasattr(self.db,"lock_manager"):
+            self.db.lock_manager.release_all(self.txn_id)
         return True
 
