@@ -1,5 +1,6 @@
 import threading
 
+
 class LockManager:
     def __init__(self):
         self.locks = {}  # RID -> {'type': 'S'/'X', 'holders': set(transaction_ids)
@@ -50,3 +51,4 @@ class LockManager:
                         lock['holders'].remove(transaction_id)
                         if not lock['holders']:
                             del self.locks[rid]
+
