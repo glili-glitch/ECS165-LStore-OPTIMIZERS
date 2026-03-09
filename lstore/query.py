@@ -100,20 +100,22 @@ class Query:
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
         rid_list = self.table.index.locate(search_key_index, search_key)
 
-        if rid_list is None:
+        if not rid_list:
             rid_list = []
             with self.table.directory_lock:
-                all_base_rids = [
+                rid_list = [
                     rid for rid, entry in self.table.page_directory.items()
                     if entry.is_base
                 ]
-            for rid in all_base_rids:
+
+        valid_rids = []       
+        for rid in rid_list:
                 val = self.table.get_column_value(rid, search_key_index, -relative_version)
                 if val == search_key:
-                    rid_list.append(rid)
+                    valid_rids.append(rid)
 
         record_list = []
-        for rid in rid_list:
+        for rid in valid_rids:
             if rid not in self.table.page_directory:
                 continue
 
