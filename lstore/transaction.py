@@ -12,17 +12,14 @@ class Transaction:
         self.db = db
         self.queries = []
         self.transaction_id = uuid.uuid4()
-        self.held_locks = set()   # set of (table_obj, rid)
-        self.rollback_log = []    # entries recorded by queries
+        self.held_locks = set()   # (table_obj, rid)
+        self.rollback_log = []
 
-    
-    
     def add_query(self, query, table_obj, *args):
         self.queries.append((query, table_obj, args))
 
     """
-    Executes all queries in order.
-    Returns True if committed, False if aborted.
+    Executes queries sequentially.
     """
     def run(self):
         try:
@@ -36,12 +33,12 @@ class Transaction:
 
     def abort(self):
         """
-        Roll back logged changes in reverse order, then release locks.
+        Undo changes in reverse order.
         """
         for entry in reversed(self.rollback_log):
+
             action = entry[0]
 
-            # Undo update metadata on base record
             if action == "update":
                 _, table_obj, base_rid, old_indirection, old_schema = entry
 
@@ -50,23 +47,28 @@ class Transaction:
                         continue
                     base_entry = table_obj.page_directory[base_rid]
 
-                base_page_range_number = base_entry.page_range_number
-                base_page_range = table_obj.page_range_directory[base_page_range_number]
-                base_data_locations = base_entry.data_locations
+                page_range_number = base_entry.page_range_number
+                page_range = table_obj.page_range_directory[page_range_number]
+                data_locations = base_entry.data_locations
 
-                # Restore indirection value in base page
-                ind_loc = base_data_locations[table.INDIRECTION_COLUMN]
+                # Restore indirection
+                ind_loc = data_locations[table.INDIRECTION_COLUMN]
                 if ind_loc is not None:
-                    ind_page = base_page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
-                    ind_page.write(old_indirection, ind_loc.offset)
+                    ind_page = page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
+                    ind_page.write(
+                        old_indirection,
+                        ind_loc.offset // page.COLUMN_ENTRY_SIZE
+                    )
 
-                # Restore schema encoding value in base page
-                schema_loc = base_data_locations[table.SCHEMA_ENCODING_COLUMN]
+                # Restore schema encoding
+                schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
                 if schema_loc is not None:
-                    schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
-                    schema_page.write(old_schema, schema_loc.offset)
+                    schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
+                    schema_page.write(
+                        old_schema,
+                        schema_loc.offset // page.COLUMN_ENTRY_SIZE
+                    )
 
-            # Undo inserted base record
             elif action == "insert":
                 _, table_obj, rid, primary_key, columns = entry
 
@@ -81,11 +83,12 @@ class Transaction:
                 for i, value in enumerate(columns):
                     table_obj.index.remove_from_index(i, value, rid)
 
-            # Undo index change from update
             elif action == "index_update":
                 _, table_obj, base_rid, col_idx, old_val, new_val = entry
+
                 if new_val is not None:
                     table_obj.index.remove_from_index(col_idx, new_val, base_rid)
+
                 if old_val is not None:
                     table_obj.index.add_to_index(col_idx, old_val, base_rid)
 
@@ -99,8 +102,8 @@ class Transaction:
         return True
 
     def _release_all_locks(self):
-        # group locks by table so release is cleaner
         locks_by_table = {}
+
         for table_obj, rid in self.held_locks:
             locks_by_table.setdefault(table_obj, []).append(rid)
 
