@@ -131,7 +131,7 @@ class Query:
                     return False
                 transaction.held_locks.add((self.table, rid))
 
-            columns = self.table.construct_full_record(rid, relative_version)
+            columns = self.table.construct_full_record(rid,version)
             primary_key = self.table.get_primary_key(rid)
 
             new_columns = []
