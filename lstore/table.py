@@ -35,9 +35,9 @@ class Record:
 
 class Table:
     """
-    :param name: string         # Table name
-    :param num_columns: int     # Number of user columns
-    :param key: int             # Index of primary key column in columns
+    :param name: string
+    :param num_columns: int
+    :param key: int
     """
 
     def __init__(self, name, num_columns, key):
@@ -52,9 +52,6 @@ class Table:
         self._merge_lock = threading.Lock()
         self.lock_manager = None
         self.directory_lock = threading.Lock()
-
-    
-        
 
     def get_primary_key(self, rid):
         page_directory_entry = self.page_directory[rid]
@@ -138,77 +135,100 @@ class Table:
         with self.directory_lock:
             if rid not in self.page_directory:
                 return None
-            base_page_directory_entry = self.page_directory[rid]
 
-        base_page_range_number = base_page_directory_entry.page_range_number
-        base_data_locations = base_page_directory_entry.data_locations
+            base_entry = self.page_directory[rid]
+            if not base_entry.is_base:
+                return None
 
+            page_range_number = base_entry.page_range_number
+            base_data_locations = base_entry.data_locations
+            page_range = self.page_range_directory[page_range_number]
+
+        def read_meta(entry, meta_col):
+            if entry is None:
+                return None
+            loc = entry.data_locations[meta_col]
+            if loc is None:
+                return None
+            pr = self.page_range_directory[entry.page_range_number]
+            pages = pr.base_pages if entry.is_base else pr.tail_pages
+            p = pages[meta_col][loc.page_number]
+            return p.read(loc.offset // page.COLUMN_ENTRY_SIZE)
+
+        def read_user_value(entry, col_num):
+            if entry is None:
+                return None
+            loc = entry.data_locations[col_num + 3]
+            if loc is None:
+                return None
+            pr = self.page_range_directory[entry.page_range_number]
+            pages = pr.base_pages if entry.is_base else pr.tail_pages
+            p = pages[col_num + 3][loc.page_number]
+            return p.read(loc.offset // page.COLUMN_ENTRY_SIZE)
+
+        base_rid = read_meta(base_entry, RID_COLUMN)
+        base_schema = read_meta(base_entry, SCHEMA_ENCODING_COLUMN)
+
+        # never updated
+        if base_schema == 0:
+            return read_user_value(base_entry, column_number)
+
+        latest_tail_rid = read_meta(base_entry, INDIRECTION_COLUMN)
+        if latest_tail_rid in (None, 0, base_rid):
+            return read_user_value(base_entry, column_number)
+
+        # Build tail chain: newest -> oldest
+        tail_chain = []
+        current_rid = latest_tail_rid
+
+        while current_rid not in (None, 0, base_rid):
+            with self.directory_lock:
+                current_entry = self.page_directory.get(current_rid)
+
+            if current_entry is None:
+                break
+
+            tail_chain.append(current_rid)
+            next_rid = read_meta(current_entry, INDIRECTION_COLUMN)
+
+            if next_rid == current_rid:
+                break
+
+            current_rid = next_rid
+
+        if not tail_chain:
+            return read_user_value(base_entry, column_number)
+
+        # oldest tail is the original snapshot created on first update
+        snapshot_rid = tail_chain[-1]
         with self.directory_lock:
-            base_page_range = self.page_range_directory[base_page_range_number]
+            snapshot_entry = self.page_directory.get(snapshot_rid)
 
-        base_rid_page_number = base_data_locations[RID_COLUMN].page_number
-        base_rid_offset = base_data_locations[RID_COLUMN].offset
-        base_rid_page = base_page_range.base_pages[RID_COLUMN][base_rid_page_number]
-        base_rid = base_rid_page.read(base_rid_offset // page.COLUMN_ENTRY_SIZE)
+        current_value = read_user_value(snapshot_entry, column_number)
+        if current_value is None:
+            current_value = read_user_value(base_entry, column_number)
 
-        base_schema_page_number = base_data_locations[SCHEMA_ENCODING_COLUMN].page_number
-        base_schema_offset = base_data_locations[SCHEMA_ENCODING_COLUMN].offset
-        base_schema_page = base_page_range.base_pages[SCHEMA_ENCODING_COLUMN][base_schema_page_number]
-        base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
+        # logical update tails in oldest -> newest order
+        update_tail_rids = list(reversed(tail_chain[:-1]))
 
-        if base_schema_int == 0:
-            data_loc = base_data_locations[column_number + 3]
-            if data_loc is not None:
-                p = base_page_range.base_pages[column_number + 3][data_loc.page_number]
-                return p.read(data_loc.offset // page.COLUMN_ENTRY_SIZE)
-            return None
+        if relative_version >= 0:
+            updates_to_apply = len(update_tail_rids)
+        else:
+            steps_back = abs(relative_version)
+            updates_to_apply = max(0, len(update_tail_rids) - steps_back)
 
-        base_indirection_loc = base_data_locations[INDIRECTION_COLUMN]
-        indirection_rid = None
-        if base_indirection_loc is not None:
-            indirection_rid_page_number = base_indirection_loc.page_number
-            indirection_rid_offset = base_indirection_loc.offset
-            indirection_rid_page = base_page_range.base_pages[INDIRECTION_COLUMN][indirection_rid_page_number]
-            indirection_rid = indirection_rid_page.read(indirection_rid_offset // page.COLUMN_ENTRY_SIZE)
+        for tail_rid in update_tail_rids[:updates_to_apply]:
+            with self.directory_lock:
+                tail_entry = self.page_directory.get(tail_rid)
 
-        version_num = 0
+            if tail_entry is None:
+                continue
 
-        while indirection_rid not in (base_rid, None, 0):
-            if relative_version == 0 and base_page_range.tps > 0 and indirection_rid <= base_page_range.tps:
-                break
+            val = read_user_value(tail_entry, column_number)
+            if val is not None:
+                current_value = val
 
-            current_page_directory_entry = self.page_directory[indirection_rid]
-            current_page_range_number = current_page_directory_entry.page_range_number
-            current_is_base = current_page_directory_entry.is_base
-            current_data_locations = current_page_directory_entry.data_locations
-
-            if version_num >= relative_version:
-                data_loc = current_data_locations[column_number + 3]
-                if data_loc is not None:
-                    current_page_range = self.page_range_directory[current_page_range_number]
-                    pages = current_page_range.base_pages if current_is_base else current_page_range.tail_pages
-                    p = pages[column_number + 3][data_loc.page_number]
-                    val = p.read(data_loc.offset // page.COLUMN_ENTRY_SIZE)
-                    if val is not None:
-                        return val
-
-            current_page_range = self.page_range_directory[current_page_range_number]
-            pages = current_page_range.base_pages if current_is_base else current_page_range.tail_pages
-            indirection_data_loc = current_data_locations[INDIRECTION_COLUMN]
-            if indirection_data_loc is None:
-                break
-
-            indirection_rid_page_number = indirection_data_loc.page_number
-            indirection_rid_offset = indirection_data_loc.offset
-            indirection_rid_page = pages[INDIRECTION_COLUMN][indirection_rid_page_number]
-            indirection_rid = indirection_rid_page.read(indirection_rid_offset // page.COLUMN_ENTRY_SIZE)
-            version_num += 1
-
-        data_loc = base_data_locations[column_number + 3]
-        if data_loc is not None:
-            p = base_page_range.base_pages[column_number + 3][data_loc.page_number]
-            return p.read(data_loc.offset // page.COLUMN_ENTRY_SIZE)
-        return None
+        return current_value
 
     def trigger_merge_check(self):
         self._update_count += 1
