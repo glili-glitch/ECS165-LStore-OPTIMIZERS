@@ -169,7 +169,6 @@ class Table:
         base_rid = read_meta(base_entry, RID_COLUMN)
         base_schema = read_meta(base_entry, SCHEMA_ENCODING_COLUMN)
 
-        # never updated
         if base_schema == 0:
             return read_user_value(base_entry, column_number)
 
@@ -177,7 +176,6 @@ class Table:
         if latest_tail_rid in (None, 0, base_rid):
             return read_user_value(base_entry, column_number)
 
-        # Build tail chain: newest -> oldest
         tail_chain = []
         current_rid = latest_tail_rid
 
@@ -191,7 +189,7 @@ class Table:
             tail_chain.append(current_rid)
             next_rid = read_meta(current_entry, INDIRECTION_COLUMN)
 
-            if next_rid == current_rid:
+            if next_rid in (None, 0, current_rid):
                 break
 
             current_rid = next_rid
@@ -199,7 +197,6 @@ class Table:
         if not tail_chain:
             return read_user_value(base_entry, column_number)
 
-        # oldest tail is the original snapshot created on first update
         snapshot_rid = tail_chain[-1]
         with self.directory_lock:
             snapshot_entry = self.page_directory.get(snapshot_rid)
@@ -208,7 +205,6 @@ class Table:
         if current_value is None:
             current_value = read_user_value(base_entry, column_number)
 
-        # logical update tails in oldest -> newest order
         update_tail_rids = list(reversed(tail_chain[:-1]))
 
         if relative_version >= 0:

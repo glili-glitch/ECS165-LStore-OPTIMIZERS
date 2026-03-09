@@ -77,6 +77,7 @@ for key in keys:
         pass
         # print('select on', key, ':', record)
 print("Select finished")
+print(db.get_table('Grades'))
 
 
 db.close()
