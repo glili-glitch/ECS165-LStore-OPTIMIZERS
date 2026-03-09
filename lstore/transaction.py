@@ -36,7 +36,6 @@ class Transaction:
         Undo changes in reverse order.
         """
         for entry in reversed(self.rollback_log):
-
             action = entry[0]
 
             if action == "update":
@@ -55,19 +54,13 @@ class Transaction:
                 ind_loc = data_locations[table.INDIRECTION_COLUMN]
                 if ind_loc is not None:
                     ind_page = page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
-                    ind_page.write(
-                        old_indirection,
-                        ind_loc.offset // page.COLUMN_ENTRY_SIZE
-                    )
+                    ind_page.write(old_indirection, ind_loc.offset)
 
                 # Restore schema encoding
                 schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
                 if schema_loc is not None:
                     schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
-                    schema_page.write(
-                        old_schema,
-                        schema_loc.offset // page.COLUMN_ENTRY_SIZE
-                    )
+                    schema_page.write(old_schema, schema_loc.offset)
 
             elif action == "insert":
                 _, table_obj, rid, primary_key, columns = entry
