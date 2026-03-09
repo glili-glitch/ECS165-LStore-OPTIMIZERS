@@ -1,4 +1,6 @@
 import threading
+from lstore.table import Table, Record
+from lstore.index import Index
 
 class TransactionWorker:
 
@@ -9,6 +11,7 @@ class TransactionWorker:
         self.stats = []
         if transactions is None:
             self.transactions = []
+            self.transactions = transactions
         else:
             self.transactions = transactions
         self.result = 0
@@ -17,7 +20,6 @@ class TransactionWorker:
 
     
     """
-    Appends t to transactions
     """
     def add_transaction(self, t):
         self.transactions.append(t)

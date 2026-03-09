@@ -1,11 +1,17 @@
 import uuid
+import itertools
+from lstore.table import Table, Record
+from lstore.index import Index
+
+_txn_id_counter = itertools.count(1)
 
 class Transaction:
 
     """
     # Creates a transaction object.
     """
-    def __init__(self):
+    def __init__(self, db = None):
+        self.db = db 
         self.queries = []
         self.transaction_id = uuid.uuid4()
         self.held_locks = set() # Set of (table, rid) tuples
