@@ -13,7 +13,7 @@ class Query:
 
     def insert(self, *columns, transaction=None):
         existing = self.table.index.locate(self.table.key, columns[self.table.key])
-        if existing:
+        if existing is not None and len(existing) > 0:
             return False
 
         if len(columns) != self.table.num_columns:
@@ -28,12 +28,14 @@ class Query:
         rid = next(_rid_counter)
 
         if transaction:
-            if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, "X"):
+            if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((self.table, rid))
 
+        schema_encoding = 0
         record = Record(rid, primary_key, list(columns))
-        all_columns = [rid, rid, 0] + list(columns)
+        all_columns = [rid, rid, schema_encoding] + list(columns)
+
         self.table.add_record(page_range_number, True, *all_columns, record=record)
 
         for i, value in enumerate(columns):
@@ -65,7 +67,7 @@ class Query:
                 continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, "S"):
+                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
 
@@ -82,7 +84,7 @@ class Query:
         return records
 
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
-        version = -relative_version
+        version = relative_version
         rid_list = self.table.index.locate(search_key_index, search_key)
 
         if not rid_list:
@@ -101,7 +103,7 @@ class Query:
                 continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, "S"):
+                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
 
@@ -125,7 +127,7 @@ class Query:
         base_rid = rids[0]
 
         if transaction:
-            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, "X"):
+            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((self.table, base_rid))
 
@@ -148,7 +150,7 @@ class Query:
             return False
 
         if transaction:
-            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, "X"):
+            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((self.table, base_rid))
 
@@ -246,7 +248,7 @@ class Query:
 
         for key in range(start_range, end_range + 1):
             rids = self.table.index.locate(self.table.key, key)
-            if not rids:
+            if rids is None or len(rids) == 0:
                 continue
 
             rid = rids[0]
@@ -254,7 +256,7 @@ class Query:
                 continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, "S"):
+                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
 
@@ -272,24 +274,21 @@ class Query:
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version, transaction=None):
         total = 0
         found = False
-        version = -relative_version
 
         for key in range(start_range, end_range + 1):
             rids = self.table.index.locate(self.table.key, key)
-            if not rids:
+            if rids is None or len(rids) == 0:
                 continue
 
             rid = rids[0]
-            if rid not in self.table.page_directory:
-                continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, "S"):
+                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
 
             found = True
-            value = self.table.get_column_value(rid, aggregate_column_index, version)
+            value = self.table.get_column_value(rid, aggregate_column_index, relative_version)
             if value is None:
                 value = 0
             total += value
@@ -307,4 +306,3 @@ class Query:
             updated_columns[column] = record.columns[column] + 1
             return self.update(key, *updated_columns, transaction=transaction)
         return False
-
