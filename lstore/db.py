@@ -51,8 +51,13 @@ class Database:
                 table_obj, next_i = self._parse_table(lines, i + 1)
                 table_obj.lock_manager = self.lock_manager
                 self._load_all_pages(table_obj)
+
                 table_obj.index = Index(table_obj)
                 self._rebuild_index(table_obj)
+
+                # Reset TPS after restart
+                for pr in table_obj.page_range_directory.values():
+                    pr.tps = 0
 
                 self.tables.append(table_obj)
                 self._table_map[table_obj.name] = table_obj
