@@ -48,6 +48,10 @@ class Query:
 
         for i, column in enumerate(columns):
             self.table.index.add_to_index(i, column, rid)
+            if transaction:
+                 transaction.rollback_log.append(
+            ("insert", self.table, rid, primary_key, list(columns))
+        )
 
         return True
 
@@ -181,7 +185,7 @@ class Query:
             base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
             base_schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
             base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
-            transaction.rollback_log.append((self.table, base_rid, base_indirection, base_schema_int))
+            transaction.rollback_log.append(("update",self.table, base_rid, base_indirection, base_schema_int))
 
         base_schema_page_number = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
         base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
@@ -239,6 +243,10 @@ class Query:
             if new_val is not None:
                 prev_val = self.table.get_column_value(base_rid, i, 1)
                 if prev_val is not None and new_val != prev_val:
+                    if transaction:
+                         transaction.rollback_log.append(
+                    ("index_update", self.table, base_rid, i, prev_val, new_val)
+                )
                     self.table.index.remove_from_index(i, prev_val, base_rid)
                     self.table.index.add_to_index(i, new_val, base_rid)
 
