@@ -71,12 +71,9 @@ class Query:
                     rid_list.append(rid)
 
         record_list = []
+
         for rid in rid_list:
             if rid not in self.table.page_directory:
-                continue
-
-            actual_val = self.table.get_column_value(rid, search_key_index, 0)
-            if actual_val != search_key:
                 continue
 
             if transaction:
@@ -87,12 +84,12 @@ class Query:
             columns = self.table.construct_full_record(rid, 0)
             primary_key = self.table.get_primary_key(rid)
 
-            new_columns = []
+            projected = []
             for i in range(len(projected_columns_index)):
                 if projected_columns_index[i] == 1:
-                    new_columns.append(columns[i])
+                    projected.append(columns[i])
 
-            record_list.append(Record(rid, primary_key, new_columns))
+            record_list.append(Record(rid, primary_key, projected))
 
         return record_list
 
@@ -103,26 +100,19 @@ class Query:
         if not rid_list:
             rid_list = []
             with self.table.directory_lock:
-                rid_list = [
+                all_base_rids = [
                     rid for rid, entry in self.table.page_directory.items()
                     if entry.is_base
                 ]
-
-        valid_rids = []
-        for rid in rid_list:
-            if rid not in self.table.page_directory:
-                continue
-            val = self.table.get_column_value(rid, search_key_index, version)
-            if val == search_key:
-                valid_rids.append(rid)
+            for rid in all_base_rids:
+                val = self.table.get_column_value(rid, search_key_index, version)
+                if val == search_key:
+                    rid_list.append(rid)
 
         record_list = []
-        for rid in valid_rids:
-            if rid not in self.table.page_directory:
-                continue
 
-            actual_val = self.table.get_column_value(rid, search_key_index, version)
-            if actual_val != search_key:
+        for rid in rid_list:
+            if rid not in self.table.page_directory:
                 continue
 
             if transaction:
@@ -133,12 +123,12 @@ class Query:
             columns = self.table.construct_full_record(rid, version)
             primary_key = self.table.get_primary_key(rid)
 
-            new_columns = []
+            projected = []
             for i in range(len(projected_columns_index)):
                 if projected_columns_index[i] == 1:
-                    new_columns.append(columns[i])
+                    projected.append(columns[i])
 
-            record_list.append(Record(rid, primary_key, new_columns))
+            record_list.append(Record(rid, primary_key, projected))
 
         return record_list
 
@@ -246,14 +236,8 @@ class Query:
         all_columns = [tail_record.rid, tail_indirection, schema_int] + list(columns)
         self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
 
-        base_indirection_page.write(
-            tail_record.rid,
-            base_indirection_offset
-        )
-        base_schema_page.write(
-            new_base_schema_int,
-            base_schema_offset
-        )
+        base_indirection_page.write(tail_record.rid, base_indirection_offset)
+        base_schema_page.write(new_base_schema_int, base_schema_offset)
 
         with self.table.directory_lock:
             base_page_directory_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(
