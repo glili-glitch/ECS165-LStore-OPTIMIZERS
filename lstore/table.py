@@ -53,18 +53,8 @@ class Table:
         self.lock_manager = None
         self.directory_lock = threading.Lock()
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        for lock_name in ["_merge_lock", "directory_lock"]:
-            state.pop(lock_name, None)
-        state.pop("lock_manager", None)
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self._merge_lock = threading.Lock()
-        self.directory_lock = threading.Lock()
-        self.lock_manager = None
+    
+        
 
     def get_primary_key(self, rid):
         page_directory_entry = self.page_directory[rid]
