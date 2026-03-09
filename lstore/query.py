@@ -12,11 +12,11 @@ class Query:
         self.table = table
 
     def insert(self, *columns, transaction=None):
-        existing = self.table.index.locate(self.table.key, columns[self.table.key])
-        if existing is not None and len(existing) > 0:
+        if len(columns) != self.table.num_columns:
             return False
 
-        if len(columns) != self.table.num_columns:
+        existing = self.table.index.locate(self.table.key, columns[self.table.key])
+        if existing is not None and len(existing) > 0:
             return False
 
         primary_key = columns[self.table.key]
@@ -34,8 +34,9 @@ class Query:
 
         schema_encoding = 0
         record = Record(rid, primary_key, list(columns))
-        all_columns = [rid, rid, schema_encoding] + list(columns)
 
+        # Meta columns: INDIRECTION, RID, SCHEMA
+        all_columns = [rid, rid, schema_encoding] + list(columns)
         self.table.add_record(page_range_number, True, *all_columns, record=record)
 
         for i, value in enumerate(columns):
@@ -84,7 +85,6 @@ class Query:
         return records
 
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
-        version = relative_version
         rid_list = self.table.index.locate(search_key_index, search_key)
 
         if not rid_list:
@@ -93,7 +93,7 @@ class Query:
                 for rid, entry in self.table.page_directory.items():
                     if not entry.is_base:
                         continue
-                    value = self.table.get_column_value(rid, search_key_index, version)
+                    value = self.table.get_column_value(rid, search_key_index, relative_version)
                     if value == search_key:
                         rid_list.append(rid)
 
@@ -107,7 +107,7 @@ class Query:
                     return False
                 transaction.held_locks.add((self.table, rid))
 
-            columns = self.table.construct_full_record(rid, version)
+            columns = self.table.construct_full_record(rid, relative_version)
             primary_key = self.table.get_primary_key(rid)
 
             result_columns = []
@@ -131,6 +131,7 @@ class Query:
                 return False
             transaction.held_locks.add((self.table, base_rid))
 
+        # tombstone-style update
         self.update(primary_key, *([None] * self.table.num_columns), transaction=transaction)
 
         with self.table.directory_lock:
@@ -146,6 +147,10 @@ class Query:
 
         base_rid = rids[0]
 
+        if len(columns) != self.table.num_columns:
+            return False
+
+        # primary key cannot be updated
         if columns[self.table.key] is not None:
             return False
 
@@ -159,18 +164,14 @@ class Query:
         page_range = self.table.page_range_directory[page_range_number]
         data_locations = base_entry.data_locations
 
+        # Read current base indirection
         indirection_loc = data_locations[table.INDIRECTION_COLUMN]
-        if indirection_loc is None:
-            indirection_page_number = len(page_range.base_pages[table.INDIRECTION_COLUMN]) - 1
-            indirection_page = page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_number]
-            indirection_offset = indirection_page.current_offset
-        else:
-            indirection_page_number = indirection_loc.page_number
-            indirection_page = page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_number]
-            indirection_offset = indirection_loc.offset
-
+        indirection_page_number = indirection_loc.page_number
+        indirection_page = page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_number]
+        indirection_offset = indirection_loc.offset
         old_indirection = indirection_page.read(indirection_offset // page.COLUMN_ENTRY_SIZE)
 
+        # Read current base schema
         schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
         schema_page_number = schema_loc.page_number
         schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_page_number]
@@ -182,6 +183,7 @@ class Query:
                 ("update", self.table, base_rid, old_indirection, old_schema)
             )
 
+        # Build schema bits for this tail record
         schema_int = 0
         new_base_schema = old_schema
 
@@ -191,10 +193,8 @@ class Query:
                 schema_int |= bit_mask
                 new_base_schema |= bit_mask
 
-        if all(value is None for value in columns):
-            schema_int = 0
-            new_base_schema = 0
-
+        # First update on this base record:
+        # create a snapshot tail holding the original base values
         base_schema_is_zero = (old_schema == 0)
         copy_tail_record = None
 
@@ -208,18 +208,19 @@ class Query:
 
             copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
             full_schema = (1 << self.table.num_columns) - 1
+
+            # snapshot tail points back to base
             copy_all_columns = [copy_tail_record.rid, base_rid, full_schema] + copy_columns
             self.table.add_record(page_range_number, False, *copy_all_columns, record=copy_tail_record)
 
+        # New tail record should point to previous latest version
+        previous_version_rid = copy_tail_record.rid if copy_tail_record is not None else old_indirection
+
         tail_record = Record(next(_rid_counter), primary_key, list(columns))
-        tail_indirection = copy_tail_record.rid if (base_schema_is_zero and copy_tail_record) else old_indirection
-
-        if all(value is None for value in columns):
-            tail_indirection = base_rid
-
-        all_columns = [tail_record.rid, tail_indirection, schema_int] + list(columns)
+        all_columns = [tail_record.rid, previous_version_rid, schema_int] + list(columns)
         self.table.add_record(page_range_number, False, *all_columns, record=tail_record)
 
+        # Update base indirection to newest tail
         indirection_page.write(tail_record.rid, indirection_offset)
         schema_page.write(new_base_schema, schema_offset)
 
@@ -227,10 +228,14 @@ class Query:
             base_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(
                 indirection_page_number, indirection_offset
             )
+            base_entry.data_locations[table.SCHEMA_ENCODING_COLUMN] = table.PageCoord(
+                schema_page_number, schema_offset
+            )
 
+        # Update secondary indexes using CURRENT latest value, not version 1
         for i, new_value in enumerate(columns):
             if new_value is not None:
-                old_value = self.table.get_column_value(base_rid, i, 1)
+                old_value = self.table.get_column_value(base_rid, i, 0)
                 if old_value is not None and new_value != old_value:
                     if transaction:
                         transaction.rollback_log.append(
@@ -281,6 +286,8 @@ class Query:
                 continue
 
             rid = rids[0]
+            if rid not in self.table.page_directory:
+                continue
 
             if transaction:
                 if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
