@@ -58,7 +58,7 @@ class Query:
     def select(self, search_key, search_key_index, projected_columns_index, transaction=None):
         rid_list = self.table.index.locate(search_key_index, search_key)
 
-        if rid_list is None:
+        if not rid_list:
             rid_list = []
             with self.table.directory_lock:
                 all_base_rids = [
@@ -79,6 +79,11 @@ class Query:
                 if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
+                # extra safety: confirm this rid really matches the requested search key
+                actual_val = self.table.get_column_value(rid, search_key_index, 0)
+                if actual_val != search_key:
+               
+                    continue
 
             columns = self.table.construct_full_record(rid, 0)
             primary_key = self.table.get_primary_key(rid)
@@ -116,6 +121,11 @@ class Query:
                 if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
+
+                actual_val = self.table.get_column_value(rid, search_key_index, -relative_version)
+                if actual_val != search_key:
+                   continue
+
 
             columns = self.table.construct_full_record(rid, -relative_version)
             primary_key = self.table.get_primary_key(rid)
@@ -213,8 +223,8 @@ class Query:
 
             for i in range(self.table.num_columns):
                 base_loc = base_data_locations[i + 3]
-                bp = base_page_range.base_pages[i + 3][base_loc.page_number]
-                copy_columns[i] = bp.read(base_loc.offset // page.COLUMN_ENTRY_SIZE)
+            bp = base_page_range.base_pages[i + 3][base_loc.page_number]
+            copy_columns[i] = bp.read(base_loc.offset // page.COLUMN_ENTRY_SIZE)
 
             copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
 
@@ -244,7 +254,7 @@ class Query:
                 prev_val = self.table.get_column_value(base_rid, i, 1)
                 if prev_val is not None and new_val != prev_val:
                     if transaction:
-                         transaction.rollback_log.append(
+                        transaction.rollback_log.append(
                     ("index_update", self.table, base_rid, i, prev_val, new_val)
                 )
                     self.table.index.remove_from_index(i, prev_val, base_rid)
