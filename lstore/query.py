@@ -2,8 +2,7 @@ from itertools import count
 
 from lstore import table
 from lstore import page
-from lstore.table import Table, Record
-from lstore.index import Index
+from lstore.table import Record
 
 _rid_counter = count(1)
 
@@ -48,10 +47,11 @@ class Query:
 
         for i, column in enumerate(columns):
             self.table.index.add_to_index(i, column, rid)
-            if transaction:
-                 transaction.rollback_log.append(
-            ("insert", self.table, rid, primary_key, list(columns))
-        )
+
+        if transaction:
+            transaction.rollback_log.append(
+                ("insert", self.table, rid, primary_key, list(columns))
+            )
 
         return True
 
@@ -75,15 +75,14 @@ class Query:
             if rid not in self.table.page_directory:
                 continue
 
+            actual_val = self.table.get_column_value(rid, search_key_index, 0)
+            if actual_val != search_key:
+                continue
+
             if transaction:
                 if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((self.table, rid))
-                # extra safety: confirm this rid really matches the requested search key
-                actual_val = self.table.get_column_value(rid, search_key_index, 0)
-                if actual_val != search_key:
-               
-                    continue
 
             columns = self.table.construct_full_record(rid, 0)
             primary_key = self.table.get_primary_key(rid)
@@ -113,7 +112,7 @@ class Query:
         for rid in rid_list:
             if rid not in self.table.page_directory:
                 continue
-            val = self.table.get_column_value(rid, search_key_index,version)
+            val = self.table.get_column_value(rid, search_key_index, version)
             if val == search_key:
                 valid_rids.append(rid)
 
@@ -122,7 +121,7 @@ class Query:
             if rid not in self.table.page_directory:
                 continue
 
-            actual_val = self.table.get_column_value(rid, search_key_index,version)
+            actual_val = self.table.get_column_value(rid, search_key_index, version)
             if actual_val != search_key:
                 continue
 
@@ -131,7 +130,7 @@ class Query:
                     return False
                 transaction.held_locks.add((self.table, rid))
 
-            columns = self.table.construct_full_record(rid,version)
+            columns = self.table.construct_full_record(rid, version)
             primary_key = self.table.get_primary_key(rid)
 
             new_columns = []
@@ -199,7 +198,9 @@ class Query:
             base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
             base_schema_offset = base_data_locations[table.SCHEMA_ENCODING_COLUMN].offset
             base_schema_int = base_schema_page.read(base_schema_offset // page.COLUMN_ENTRY_SIZE)
-            transaction.rollback_log.append(("update",self.table, base_rid, base_indirection, base_schema_int))
+            transaction.rollback_log.append(
+                ("update", self.table, base_rid, base_indirection, base_schema_int)
+            )
 
         base_schema_page_number = base_data_locations[table.SCHEMA_ENCODING_COLUMN].page_number
         base_schema_page = base_page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][base_schema_page_number]
@@ -227,8 +228,8 @@ class Query:
 
             for i in range(self.table.num_columns):
                 base_loc = base_data_locations[i + 3]
-            bp = base_page_range.base_pages[i + 3][base_loc.page_number]
-            copy_columns[i] = bp.read(base_loc.offset // page.COLUMN_ENTRY_SIZE)
+                bp = base_page_range.base_pages[i + 3][base_loc.page_number]
+                copy_columns[i] = bp.read(base_loc.offset // page.COLUMN_ENTRY_SIZE)
 
             copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
 
@@ -245,8 +246,14 @@ class Query:
         all_columns = [tail_record.rid, tail_indirection, schema_int] + list(columns)
         self.table.add_record(base_page_range_number, False, *all_columns, record=tail_record)
 
-        base_indirection_page.write(tail_record.rid, base_indirection_offset)
-        base_schema_page.write(new_base_schema_int, base_schema_offset)
+        base_indirection_page.write(
+            tail_record.rid,
+            base_indirection_offset // page.COLUMN_ENTRY_SIZE
+        )
+        base_schema_page.write(
+            new_base_schema_int,
+            base_schema_offset // page.COLUMN_ENTRY_SIZE
+        )
 
         with self.table.directory_lock:
             base_page_directory_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(
@@ -259,8 +266,8 @@ class Query:
                 if prev_val is not None and new_val != prev_val:
                     if transaction:
                         transaction.rollback_log.append(
-                    ("index_update", self.table, base_rid, i, prev_val, new_val)
-                )
+                            ("index_update", self.table, base_rid, i, prev_val, new_val)
+                        )
                     self.table.index.remove_from_index(i, prev_val, base_rid)
                     self.table.index.add_to_index(i, new_val, base_rid)
 
