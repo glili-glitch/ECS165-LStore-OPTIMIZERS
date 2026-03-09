@@ -5,6 +5,7 @@ from lstore.table import Table
 from lstore.index import Index
 from lstore.bufferpool import BufferPool
 from lstore.page import Page
+from lstore.lock_manager import LockManager
 
 class Database():
 
@@ -13,6 +14,7 @@ class Database():
         self._table_map = {}
         self.path = None
         self.bufferpool = None
+        self.lock_manager = LockManager()
 
     def open(self, path):
         """
@@ -41,6 +43,7 @@ class Database():
                 # Rebuild index from data (indexes are not persisted)
                 table.index = Index(table)
                 self._rebuild_index(table)
+                table.lock_manager = self.lock_manager
 
                 self.tables.append(table)
                 self._table_map[table.name] = table
@@ -88,32 +91,27 @@ class Database():
         return max_rid
 
     def close(self):
-        """
-        Persist all data to disk:
-        1. Write all pages to individual files via bufferpool
-        2. Pickle table metadata (with page data stripped out)
-        """
+        # print("Database.close() called")
         if self.path is None:
             return
         os.makedirs(self.path, exist_ok=True)
 
-        # Wait for any background merge threads to finish
         for table in self.tables:
             if hasattr(table, 'wait_for_merge'):
                 table.wait_for_merge()
 
-        # Step 1: Write all page data to individual files
         if self.bufferpool:
+            # print("Writing all pages to disk...")
             self.bufferpool.write_all_pages()
 
-        # Step 2: Collect all pages and strip data for metadata pickle
+        # print("Collecting all pages...")
         all_pages = self._collect_all_pages()
+        # print(f"Found {len(all_pages)} pages.")
         saved_data = {}
         for page in all_pages:
             saved_data[page.page_id] = page.data
-            page.data = None    # Don't duplicate data in pickle
+            page.data = None
 
-        # Strip indexes (rebuilt on open)
         saved_indexes = {}
         for table in self.tables:
             saved_indexes[table.name] = table.index
@@ -125,8 +123,15 @@ class Database():
         }
 
         db_file = os.path.join(self.path, 'db.pkl')
-        with open(db_file, 'wb') as f:
-            pickle.dump(db_data, f)
+        # print(f"Saving metadata to {db_file}...")
+        try:
+            with open(db_file, 'wb') as f:
+                pickle.dump(db_data, f)
+            print("Database metadata saved successfully.")
+        except Exception as e:
+            print(f"FAILED to save database metadata: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Restore in-memory state
         for page in all_pages:
@@ -155,6 +160,7 @@ class Database():
         if name in self._table_map:
             raise ValueError(f"Table '{name}' exists.")
         table = Table(name, num_columns, key_index)
+        table.lock_manager = self.lock_manager
         self.tables.append(table)
         self._table_map[name] = table
         return table
