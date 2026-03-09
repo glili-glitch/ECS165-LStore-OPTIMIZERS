@@ -110,35 +110,35 @@ class Query:
 
         valid_rids = []
         for rid in rid_list:
-            if rid not in self.table.page_directory:
-                continue
-            val = self.table.get_column_value(rid, search_key_index, relative_version)
-            if val == search_key:
-                valid_rids.append(rid)
+          if rid not in self.table.page_directory:
+            continue
+        val = self.table.get_column_value(rid, search_key_index, relative_version)
+        if val == search_key:
+            valid_rids.append(rid)
 
         record_list = []
         for rid in valid_rids:
-            if rid not in self.table.page_directory:
-                continue
+          if rid not in self.table.page_directory:
+            continue
 
             actual_val = self.table.get_column_value(rid, search_key_index, relative_version)
             if actual_val != search_key:
-                continue
+                    continue
 
-            if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
-                    return False
-                transaction.held_locks.add((self.table, rid))
+        if transaction:
+            if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                return False
+            transaction.held_locks.add((self.table, rid))
 
-            columns = self.table.construct_full_record(rid, relative_version)
-            primary_key = self.table.get_primary_key(rid)
+        columns = self.table.construct_full_record(rid, relative_version)
+        primary_key = self.table.get_primary_key(rid)
 
-            new_columns = []
-            for i in range(len(projected_columns_index)):
-                if projected_columns_index[i] == 1:
-                    new_columns.append(columns[i])
+        new_columns = []
+        for i in range(len(projected_columns_index)):
+            if projected_columns_index[i] == 1:
+                new_columns.append(columns[i])
 
-            record_list.append(Record(rid, primary_key, new_columns))
+        record_list.append(Record(rid, primary_key, new_columns))
 
         return record_list
 
