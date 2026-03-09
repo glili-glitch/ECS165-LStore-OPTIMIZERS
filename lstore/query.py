@@ -248,11 +248,11 @@ class Query:
 
         base_indirection_page.write(
             tail_record.rid,
-            base_indirection_offset // page.COLUMN_ENTRY_SIZE
+            base_indirection_offset
         )
         base_schema_page.write(
             new_base_schema_int,
-            base_schema_offset // page.COLUMN_ENTRY_SIZE
+            base_schema_offset
         )
 
         with self.table.directory_lock:
