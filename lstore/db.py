@@ -1,6 +1,6 @@
 import os
+import json # delete pickle
 from itertools import count
-
 from lstore.table import Table, Record, PageCoord, PageDirectoryEntry, PageRange
 from lstore.index import Index
 from lstore.bufferpool import BufferPool
