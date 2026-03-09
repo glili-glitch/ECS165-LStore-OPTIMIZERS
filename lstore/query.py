@@ -101,22 +101,28 @@ class Query:
         rid_list = self.table.index.locate(search_key_index, search_key)
 
         if not rid_list:
-            rid_list = []
-            with self.table.directory_lock:
-                rid_list = [
-                    rid for rid, entry in self.table.page_directory.items()
-                    if entry.is_base
-                ]
+          rid_list = []
+        with self.table.directory_lock:
+            rid_list = [
+                rid for rid, entry in self.table.page_directory.items()
+                if entry.is_base
+            ]
 
-        valid_rids = []       
+        valid_rids = []
         for rid in rid_list:
-                val = self.table.get_column_value(rid, search_key_index, -relative_version)
-                if val == search_key:
-                    valid_rids.append(rid)
+            if rid not in self.table.page_directory:
+                continue
+            val = self.table.get_column_value(rid, search_key_index, relative_version)
+            if val == search_key:
+                valid_rids.append(rid)
 
         record_list = []
         for rid in valid_rids:
             if rid not in self.table.page_directory:
+                continue
+
+            actual_val = self.table.get_column_value(rid, search_key_index, relative_version)
+            if actual_val != search_key:
                 continue
 
             if transaction:
@@ -124,12 +130,7 @@ class Query:
                     return False
                 transaction.held_locks.add((self.table, rid))
 
-                actual_val = self.table.get_column_value(rid, search_key_index, -relative_version)
-                if actual_val != search_key:
-                   continue
-
-
-            columns = self.table.construct_full_record(rid, -relative_version)
+            columns = self.table.construct_full_record(rid, relative_version)
             primary_key = self.table.get_primary_key(rid)
 
             new_columns = []
