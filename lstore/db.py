@@ -97,7 +97,7 @@ class Database:
     def drop_table(self, name):
         if name not in self._table_map:
             return False
-        table_obj = self._table_map.pop(name)
+        self._table_map.pop(name)
         self.tables = [t for t in self.tables if t.name != name]
         return True
 
@@ -194,9 +194,7 @@ class Database:
             else:
                 loc_parts.append(f"{coord.page_number}:{coord.offset}")
         loc_str = ",".join(loc_parts)
-        f.write(
-            f"PDIR|{rid}|{entry.page_range_number}|{1 if entry.is_base else 0}|{loc_str}\n"
-        )
+        f.write(f"PDIR|{rid}|{entry.page_range_number}|{1 if entry.is_base else 0}|{loc_str}\n")
 
     def _parse_table(self, lines, start_i):
         name = None
@@ -236,7 +234,7 @@ class Database:
             elif line.startswith("UPDATE_COUNT|"):
                 update_count = int(line.split("|")[1])
             elif line == "PAGE_RANGE_START":
-                pr, next_i = self._parse_page_range(lines, i + 1, None)
+                pr, next_i = self._parse_page_range(lines, i + 1)
                 page_ranges[pr.page_range_number] = pr
                 i = next_i
                 continue
@@ -248,7 +246,7 @@ class Database:
 
         raise ValueError("Malformed metadata: missing TABLE_END")
 
-    def _parse_page_range(self, lines, start_i, table_obj):
+    def _parse_page_range(self, lines, start_i):
         pr_num = None
         num_records = 0
         tps = 0
@@ -258,17 +256,12 @@ class Database:
         tail_records = {}
 
         i = start_i
-
         while i < len(lines):
             line = lines[i]
 
             if line == "PAGE_RANGE_END":
-                if table_obj is None:
-                    dummy = type("DummyTable", (), {"num_columns": len(base_pages) - 3})()
-                    pr = PageRange(dummy, pr_num)
-                else:
-                    pr = PageRange(table_obj, pr_num)
-
+                dummy = type("DummyTable", (), {"num_columns": len(base_pages) - 3})()
+                pr = PageRange(dummy, pr_num)
                 pr.base_pages = base_pages
                 pr.tail_pages = tail_pages
                 pr.base_records = base_records
