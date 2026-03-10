@@ -157,7 +157,7 @@ class Table:
             curr_rid = next_rid
 
         # relative_version = 0 means latest
-        # relative_version = -1 means one version older, etc.
+        # relative_version = -1 means one version older, 
         if relative_version < 0:
             steps_back = abs(relative_version)
             if steps_back >= len(chain):
