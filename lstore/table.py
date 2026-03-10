@@ -210,7 +210,7 @@ class Table:
         if relative_version >= 0:
             updates_to_apply = len(update_tail_rids)
         else:
-            steps_back = abs(relative_version)
+            steps_back = abs(relative_version) 
             updates_to_apply = max(0, len(update_tail_rids) - steps_back)
 
         for tail_rid in update_tail_rids[:updates_to_apply]:

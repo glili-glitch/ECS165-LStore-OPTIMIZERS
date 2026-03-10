@@ -1,315 +1,216 @@
 from itertools import count
-
-from lstore import table
-from lstore import page
+from lstore import table, page
 from lstore.table import Record
 
 _rid_counter = count(1)
-
 
 class Query:
     def __init__(self, table):
         self.table = table
 
     def insert(self, *columns, transaction=None):
-        if len(columns) != self.table.num_columns:
+        target_table = self.table
+        if len(columns) != target_table.num_columns:
             return False
 
-        existing = self.table.index.locate(self.table.key, columns[self.table.key])
-        if existing is not None and len(existing) > 0:
+        existing = target_table.index.locate(target_table.key, columns[target_table.key])
+        if existing:
             return False
 
-        primary_key = columns[self.table.key]
+        primary_key = columns[target_table.key]
         page_range_number = primary_key // table.NUM_RECORDS_PER_RANGE
 
-        if page_range_number not in self.table.page_range_directory:
-            self.table.add_page_range(page_range_number)
+        if page_range_number not in target_table.page_range_directory:
+            target_table.add_page_range(page_range_number)
 
         rid = next(_rid_counter)
 
         if transaction:
-            if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
+            if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((self.table, rid))
+            transaction.held_locks.add((target_table, rid))
 
         schema_encoding = 0
-        record = Record(rid, primary_key, list(columns))
-
-        # Meta columns: INDIRECTION, RID, SCHEMA
-        all_columns = [rid, rid, schema_encoding] + list(columns)
-        self.table.add_record(page_range_number, True, *all_columns, record=record)
+        col_list = list(columns)
+        all_columns = [rid, rid, schema_encoding] + col_list
+        target_table.add_record(page_range_number, True, *all_columns, record=Record(rid, primary_key, col_list))
 
         for i, value in enumerate(columns):
-            self.table.index.add_to_index(i, value, rid)
+            target_table.index.add_to_index(i, value, rid)
 
         if transaction:
-            transaction.rollback_log.append(
-                ("insert", self.table, rid, primary_key, list(columns))
-            )
+            transaction.rollback_log.append(("insert", target_table, rid, primary_key, col_list))
 
         return True
 
     def select(self, search_key, search_key_index, projected_columns_index, transaction=None):
-        rid_list = self.table.index.locate(search_key_index, search_key)
+        target_table = self.table
+        rid_list = target_table.index.locate(search_key_index, search_key)
 
         if not rid_list:
             rid_list = []
-            with self.table.directory_lock:
-                for rid, entry in self.table.page_directory.items():
-                    if not entry.is_base:
-                        continue
-                    value = self.table.get_column_value(rid, search_key_index, 0)
-                    if value == search_key:
+            with target_table.directory_lock:
+                for rid, entry in target_table.page_directory.items():
+                    if entry.is_base and target_table.get_column_value(rid, search_key_index, 0) == search_key:
                         rid_list.append(rid)
 
         records = []
+        directory = target_table.page_directory
         for rid in rid_list:
-            if rid not in self.table.page_directory:
+            if rid not in directory:
                 continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((self.table, rid))
+                transaction.held_locks.add((target_table, rid))
 
-            columns = self.table.construct_full_record(rid, 0)
-            primary_key = self.table.get_primary_key(rid)
-
-            result_columns = []
-            for i in range(len(projected_columns_index)):
-                if projected_columns_index[i] == 1:
-                    result_columns.append(columns[i])
-
-            records.append(Record(rid, primary_key, result_columns))
+            columns = target_table.construct_full_record(rid, 0)
+            primary_key = target_table.get_primary_key(rid)
+            res_cols = [columns[i] for i, p in enumerate(projected_columns_index) if p == 1]
+            records.append(Record(rid, primary_key, res_cols))
 
         return records
 
-    def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
-        rid_list = self.table.index.locate(search_key_index, search_key)
+    def select_version(self, search_key, search_key_index, proj_index, relative_version, transaction=None):
+        target_table = self.table
+        rid_list = target_table.index.locate(search_key_index, search_key)
 
         if not rid_list:
             rid_list = []
-            with self.table.directory_lock:
-                for rid, entry in self.table.page_directory.items():
-                    if not entry.is_base:
-                        continue
-                    value = self.table.get_column_value(rid, search_key_index, relative_version)
-                    if value == search_key:
+            with target_table.directory_lock:
+                for rid, entry in target_table.page_directory.items():
+                    if entry.is_base and target_table.get_column_value(rid, search_key_index, relative_version) == search_key:
                         rid_list.append(rid)
 
         records = []
+        directory = target_table.page_directory
         for rid in rid_list:
-            if rid not in self.table.page_directory:
+            if rid not in directory:
                 continue
 
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((self.table, rid))
+                transaction.held_locks.add((target_table, rid))
 
-            columns = self.table.construct_full_record(rid, relative_version)
-            primary_key = self.table.get_primary_key(rid)
-
-            result_columns = []
-            for i in range(len(projected_columns_index)):
-                if projected_columns_index[i] == 1:
-                    result_columns.append(columns[i])
-
-            records.append(Record(rid, primary_key, result_columns))
+            columns = target_table.construct_full_record(rid, relative_version)
+            primary_key = target_table.get_primary_key(rid)
+            res_cols = [columns[i] for i, p in enumerate(proj_index) if p == 1]
+            records.append(Record(rid, primary_key, res_cols))
 
         return records
 
     def delete(self, primary_key, transaction=None):
-        rids = self.table.index.locate(self.table.key, primary_key)
-        if not rids:
-            return False
+        target_table = self.table
+        rids = target_table.index.locate(target_table.key, primary_key)
+        if not rids: return False
 
         base_rid = rids[0]
-
         if transaction:
-            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+            if not target_table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((self.table, base_rid))
+            transaction.held_locks.add((target_table, base_rid))
 
-        # tombstone-style update
-        self.update(primary_key, *([None] * self.table.num_columns), transaction=transaction)
+        self.update(primary_key, *([None] * target_table.num_columns), transaction=transaction)
 
-        with self.table.directory_lock:
-            if base_rid in self.table.page_directory:
-                del self.table.page_directory[base_rid]
+        with target_table.directory_lock:
+            target_table.page_directory.pop(base_rid, None)
 
         return True
 
     def update(self, primary_key, *columns, transaction=None):
-        rids = self.table.index.locate(self.table.key, primary_key)
-        if not rids:
+        t = self.table
+        rids = t.index.locate(t.key, primary_key)
+        if not rids or len(columns) != t.num_columns or columns[t.key] is not None:
             return False
 
         base_rid = rids[0]
-
-        if len(columns) != self.table.num_columns:
-            return False
-
-        # primary key cannot be updated
-        if columns[self.table.key] is not None:
-            return False
-
         if transaction:
-            if not self.table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+            if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((self.table, base_rid))
+            transaction.held_locks.add((t, base_rid))
 
-        base_entry = self.table.page_directory[base_rid]
-        page_range_number = base_entry.page_range_number
-        page_range = self.table.page_range_directory[page_range_number]
-        data_locations = base_entry.data_locations
+        base_entry = t.page_directory[base_rid]
+        p_range = t.page_range_directory[base_entry.page_range_number]
+        locs = base_entry.data_locations
 
-        # Read current base indirection
-        indirection_loc = data_locations[table.INDIRECTION_COLUMN]
-        indirection_page_number = indirection_loc.page_number
-        indirection_page = page_range.base_pages[table.INDIRECTION_COLUMN][indirection_page_number]
-        indirection_offset = indirection_loc.offset
-        old_indirection = indirection_page.read(indirection_offset // page.COLUMN_ENTRY_SIZE)
+        ind_loc = locs[table.INDIRECTION_COLUMN]
+        ind_page = p_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
+        old_ind = ind_page.read(ind_loc.offset // page.COLUMN_ENTRY_SIZE)
 
-        # Read current base schema
-        schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
-        schema_page_number = schema_loc.page_number
-        schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_page_number]
-        schema_offset = schema_loc.offset
-        old_schema = schema_page.read(schema_offset // page.COLUMN_ENTRY_SIZE)
+        sch_loc = locs[table.SCHEMA_ENCODING_COLUMN]
+        sch_page = p_range.base_pages[table.SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
+        old_sch = sch_page.read(sch_loc.offset // page.COLUMN_ENTRY_SIZE)
 
         if transaction:
-            transaction.rollback_log.append(
-                ("update", self.table, base_rid, old_indirection, old_schema)
-            )
+            transaction.rollback_log.append(("update", t, base_rid, old_ind, old_sch))
 
-        # Build schema bits for this tail record
-        schema_int = 0
-        new_base_schema = old_schema
+        sch_int, new_base_sch, num_cols = 0, old_sch, t.num_columns
+        for i, val in enumerate(columns):
+            if val is not None:
+                mask = 1 << (num_cols - 1 - i)
+                sch_int |= mask
+                new_base_sch |= mask
 
-        for i, value in enumerate(columns):
-            if value is not None:
-                bit_mask = 1 << (self.table.num_columns - 1 - i)
-                schema_int |= bit_mask
-                new_base_schema |= bit_mask
+        copy_tail = None
+        if old_sch == 0 and any(v is not None for v in columns):
+            copy_cols = [p_range.base_pages[i+3][locs[i+3].page_number].read(locs[i+3].offset // page.COLUMN_ENTRY_SIZE) for i in range(num_cols)]
+            copy_tail = Record(next(_rid_counter), primary_key, copy_cols)
+            t.add_record(base_entry.page_range_number, False, *([copy_tail.rid, base_rid, (1 << num_cols) - 1] + copy_cols), record=copy_tail)
 
-        # First update on this base record:
-        # create a snapshot tail holding the original base values
-        base_schema_is_zero = (old_schema == 0)
-        copy_tail_record = None
+        prev_rid = copy_tail.rid if copy_tail else old_ind
+        tail_rec = Record(next(_rid_counter), primary_key, list(columns))
+        t.add_record(base_entry.page_range_number, False, *([tail_rec.rid, prev_rid, sch_int] + list(columns)), record=tail_rec)
 
-        if base_schema_is_zero and any(value is not None for value in columns):
-            copy_columns = [None] * self.table.num_columns
+        ind_page.write(tail_rec.rid, ind_loc.offset)
+        sch_page.write(new_base_sch, sch_loc.offset)
 
-            for i in range(self.table.num_columns):
-                base_loc = data_locations[i + 3]
-                base_page = page_range.base_pages[i + 3][base_loc.page_number]
-                copy_columns[i] = base_page.read(base_loc.offset // page.COLUMN_ENTRY_SIZE)
+        with t.directory_lock:
+            locs[table.INDIRECTION_COLUMN] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
+            locs[table.SCHEMA_ENCODING_COLUMN] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
-            copy_tail_record = Record(next(_rid_counter), primary_key, copy_columns)
-            full_schema = (1 << self.table.num_columns) - 1
+        for i, new_val in enumerate(columns):
+            if new_val is not None:
+                old_val = t.get_column_value(base_rid, i, 0)
+                if old_val is not None and new_val != old_val:
+                    if transaction: transaction.rollback_log.append(("index_update", t, base_rid, i, old_val, new_val))
+                    t.index.remove_from_index(i, old_val, base_rid)
+                    t.index.add_to_index(i, new_val, base_rid)
 
-            # snapshot tail points back to base
-            copy_all_columns = [copy_tail_record.rid, base_rid, full_schema] + copy_columns
-            self.table.add_record(page_range_number, False, *copy_all_columns, record=copy_tail_record)
-
-        # New tail record should point to previous latest version
-        previous_version_rid = copy_tail_record.rid if copy_tail_record is not None else old_indirection
-
-        tail_record = Record(next(_rid_counter), primary_key, list(columns))
-        all_columns = [tail_record.rid, previous_version_rid, schema_int] + list(columns)
-        self.table.add_record(page_range_number, False, *all_columns, record=tail_record)
-
-        # Update base indirection to newest tail
-        indirection_page.write(tail_record.rid, indirection_offset)
-        schema_page.write(new_base_schema, schema_offset)
-
-        with self.table.directory_lock:
-            base_entry.data_locations[table.INDIRECTION_COLUMN] = table.PageCoord(
-                indirection_page_number, indirection_offset
-            )
-            base_entry.data_locations[table.SCHEMA_ENCODING_COLUMN] = table.PageCoord(
-                schema_page_number, schema_offset
-            )
-
-        # Update secondary indexes using CURRENT latest value, not version 1
-        for i, new_value in enumerate(columns):
-            if new_value is not None:
-                old_value = self.table.get_column_value(base_rid, i, 1)
-                if old_value is not None and new_value != old_value:
-                    if transaction:
-                        transaction.rollback_log.append(
-                            ("index_update", self.table, base_rid, i, old_value, new_value)
-                        )
-                    self.table.index.remove_from_index(i, old_value, base_rid)
-                    self.table.index.add_to_index(i, new_value, base_rid)
-
-        self.table.trigger_merge_check()
+        t.trigger_merge_check()
         return True
 
     def sum(self, start_range, end_range, aggregate_column_index, transaction=None):
-        total = 0
-        found = False
-
+        t, total, found = self.table, 0, False
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(self.table.key, key)
-            if rids is None or len(rids) == 0:
-                continue
-
+            rids = t.index.locate(t.key, key)
+            if not rids or rids[0] not in t.page_directory: continue
             rid = rids[0]
-            if rid not in self.table.page_directory:
-                continue
-
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
-                    return False
-                transaction.held_locks.add((self.table, rid))
-
+                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'): return False
+                transaction.held_locks.add((t, rid))
             found = True
-            value = self.table.get_column_value(rid, aggregate_column_index, 0)
-            if value is None:
-                value = 0
-            total += value
+            total += (t.get_column_value(rid, aggregate_column_index, 0) or 0)
+        return total if found else False
 
-        if not found:
-            return False
-
-        return total
-
-    def sum_version(self, start_range, end_range, aggregate_column_index, relative_version, transaction=None):
-        total = 0
-        found = False
-
+    def sum_version(self, start_range, end_range, agg_idx, rel_ver, transaction=None):
+        t, total, found = self.table, 0, False
         for key in range(start_range, end_range + 1):
-            rids = self.table.index.locate(self.table.key, key)
-            if rids is None or len(rids) == 0:
-                continue
-
+            rids = t.index.locate(t.key, key)
+            if not rids or rids[0] not in t.page_directory: continue
             rid = rids[0]
-            if rid not in self.table.page_directory:
-                continue
-
             if transaction:
-                if not self.table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
-                    return False
-                transaction.held_locks.add((self.table, rid))
-
+                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'): return False
+                transaction.held_locks.add((t, rid))
             found = True
-            value = self.table.get_column_value(rid, aggregate_column_index, relative_version)
-            if value is None:
-                value = 0
-            total += value
-
-        if not found:
-            return False
-
-        return total
+            total += (t.get_column_value(rid, agg_idx, rel_ver) or 0)
+        return total if found else False
 
     def increment(self, key, column, transaction=None):
-        result = self.select(key, self.table.key, [1] * self.table.num_columns, transaction=transaction)
-        if result is not False and result:
-            record = result[0]
-            updated_columns = [None] * self.table.num_columns
-            updated_columns[column] = record.columns[column] + 1
-            return self.update(key, *updated_columns, transaction=transaction)
+        res = self.select(key, self.table.key, [1] * self.table.num_columns, transaction=transaction)
+        if res:
+            updated = [None] * self.table.num_columns
+            updated[column] = res[0].columns[column] + 1
+            return self.update(key, *updated, transaction=transaction)
         return False
