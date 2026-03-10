@@ -160,7 +160,7 @@ class Query:
 
         # No-op updates should fail
         if not any(val is not None for val in columns):
-            return False
+            return True
 
         base_rid = rids[0]
 
