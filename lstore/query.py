@@ -133,8 +133,7 @@ class Query:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((t, base_rid))
-        if all(v is None for v in columns):
-                return True
+
         base_entry = t.page_directory[base_rid]
         p_range = t.page_range_directory[base_entry.page_range_number]
         locs = base_entry.data_locations
