@@ -60,7 +60,7 @@ class Query:
             rid_list = []
             with t.directory_lock:
                 for rid, entry in t.page_directory.items():
-                    if entry.is_base and t.get_column_value(rid, search_key_index, 0) == search_key:
+                    if entry.is_base:
                         rid_list.append(rid)
 
         records = []
@@ -69,12 +69,14 @@ class Query:
             if rid not in t.page_directory:
                 continue
 
-            
+            actual_value = t.get_column_value(rid, search_key_index, 0)
+            if actual_value != search_key:
+                continue
+
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
-            
 
             columns = t.construct_full_record(rid, 0)
             if columns is None:
@@ -88,30 +90,28 @@ class Query:
             records.append(Record(rid, primary_key, res_cols))
 
         return records
-
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
         t = self.table
-        rid_list = t.index.locate(search_key_index, search_key)
-
-        if not rid_list:
-            rid_list = []
-            with t.directory_lock:
-                for rid, entry in t.page_directory.items():
-                    if entry.is_base and t.get_column_value(rid, search_key_index, relative_version) == search_key:
-                        rid_list.append(rid)
-
         records = []
 
-        for rid in rid_list:
+        with t.directory_lock:
+            candidate_rids = [
+                rid for rid, entry in t.page_directory.items()
+                if entry.is_base
+            ]
+
+        for rid in candidate_rids:
             if rid not in t.page_directory:
                 continue
 
-            
+            value = t.get_column_value(rid, search_key_index, relative_version)
+            if value != search_key:
+                continue
+
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
-            
 
             columns = t.construct_full_record(rid, relative_version)
             if columns is None:
@@ -125,7 +125,6 @@ class Query:
             records.append(Record(rid, primary_key, res_cols))
 
         return records
-
     def delete(self, primary_key, transaction=None):
         t = self.table
         rids = t.index.locate(t.key, primary_key)
@@ -170,7 +169,7 @@ class Query:
 
         base_rid = rids[0]
 
-        # LOCKING ---
+        # LOCKING 
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
