@@ -102,31 +102,20 @@ class Query:
         return records
 
     def delete(self, primary_key, transaction=None):
-        t = self.table
-        rids = t.index.locate(t.key, primary_key)
-        if not rids:
-          return False
+        target_table = self.table
+        rids = target_table.index.locate(target_table.key, primary_key)
+        if not rids: return False
 
         base_rid = rids[0]
-
         if transaction:
-           if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
-            return False
-        transaction.held_locks.add((t, base_rid))
+            if not target_table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+                return False
+            transaction.held_locks.add((target_table, base_rid))
 
-        current_values = t.construct_full_record(base_rid, 0)
-        if current_values is None:
-          return False
+        self.update(primary_key, *([None] * target_table.num_columns), transaction=transaction)
 
-        if transaction:
-           transaction.rollback_log.append(("delete", t, base_rid, primary_key, current_values))
-
-    # remove from all indexes
-        for i, val in enumerate(current_values):
-          t.index.remove_from_index(i, val, base_rid)
-
-        with t.directory_lock:
-          t.page_directory.pop(base_rid, None)
+        with target_table.directory_lock:
+            target_table.page_directory.pop(base_rid, None)
 
         return True
 
@@ -137,30 +126,18 @@ class Query:
             return False
 
         base_rid = rids[0]
-
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((t, base_rid))
 
-        # get current values BEFORE changing anything
-        current_values = t.construct_full_record(base_rid, 0)
-        if current_values is None:
-            return False
-
-        # no-op update
-        if all(v is None for v in columns):
-            return True
-
         base_entry = t.page_directory[base_rid]
         p_range = t.page_range_directory[base_entry.page_range_number]
         locs = base_entry.data_locations
 
-        ind_col = table.INDIRECTION_COLUMN
-        sch_col = table.SCHEMA_ENCODING_COLUMN
-        ent_size = page.COLUMN_ENTRY_SIZE
-        n_cols = t.num_columns
-
+        # Localize frequently used constants/attributes
+        ind_col, sch_col, ent_size = table.INDIRECTION_COLUMN, table.SCHEMA_ENCODING_COLUMN, page.COLUMN_ENTRY_SIZE
+        
         ind_loc = locs[ind_col]
         ind_page = p_range.base_pages[ind_col][ind_loc.page_number]
         old_ind = ind_page.read(ind_loc.offset // ent_size)
@@ -172,49 +149,37 @@ class Query:
         if transaction:
             transaction.rollback_log.append(("update", t, base_rid, old_ind, old_sch))
 
-        # first update: create a full snapshot tail from base/current values
-        copy_tail = None
-        if old_sch == 0:
-            copy_tail_rid = next(_rid_counter)
-            copy_cols = current_values[:]   # full old version
-            copy_tail = Record(copy_tail_rid, primary_key, copy_cols)
-            t.add_record(
-                base_entry.page_range_number,
-                False,
-                *([copy_tail_rid, base_rid, (1 << n_cols) - 1] + copy_cols),
-                record=copy_tail
-            )
-
-        # create actual update tail: changed cols keep new value, unchanged cols are None
-        schema_int = 0
-        tail_cols = [None] * n_cols
+        sch_int, new_base_sch, n_cols = 0, old_sch, t.num_columns
         for i, val in enumerate(columns):
             if val is not None:
-                schema_int |= (1 << (n_cols - 1 - i))
-                tail_cols[i] = val
+                mask = 1 << (n_cols - 1 - i)
+                sch_int |= mask
+                new_base_sch |= mask
+
+        copy_tail = None
+        if not old_sch and any(v is not None for v in columns):
+            # Optimized list comprehension for base value copying
+            copy_cols = [p_range.base_pages[i+3][locs[i+3].page_number].read(locs[i+3].offset // ent_size) for i in range(n_cols)]
+            copy_tail = Record(next(_rid_counter), primary_key, copy_cols)
+            t.add_record(base_entry.page_range_number, False, *([copy_tail.rid, base_rid, (1 << n_cols) - 1] + copy_cols), record=copy_tail)
 
         prev_rid = copy_tail.rid if copy_tail else old_ind
-        tail_rid = next(_rid_counter)
-        tail_rec = Record(tail_rid, primary_key, tail_cols)
+        tail_rec = Record(next(_rid_counter), primary_key, list(columns))
+        t.add_record(base_entry.page_range_number, False, *([tail_rec.rid, prev_rid, sch_int] + list(columns)), record=tail_rec)
 
-        t.add_record(
-            base_entry.page_range_number,
-            False,
-            *([tail_rid, prev_rid, schema_int] + tail_cols),
-            record=tail_rec
-        )
+        ind_page.write(tail_rec.rid, ind_loc.offset)
+        sch_page.write(new_base_sch, sch_loc.offset)
 
-        # update base indirection + base schema
-        ind_page.write(tail_rid, ind_loc.offset)
-        sch_page.write(old_sch | schema_int, sch_loc.offset)
+        with t.directory_lock:
+            locs[ind_col] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
+            locs[sch_col] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
-        # update indexes using PRE-update current_values
+        # INDEX UPDATE LOGIC: Use Version 1 to find the real old value
         for i, new_val in enumerate(columns):
             if new_val is not None:
-                old_val = current_values[i]
-                if old_val != new_val:
-                    if transaction:
-                        transaction.rollback_log.append(("index_update", t, base_rid, i, old_val, new_val))
+                old_val = t.get_column_value(base_rid, i, 0) 
+                if old_val is not None and new_val != old_val:
+                    if transaction: transaction.rollback_log.append(("index_update", t, base_rid, i, old_val, new_val))
                     t.index.remove_from_index(i, old_val, base_rid)
                     t.index.add_to_index(i, new_val, base_rid)
 
