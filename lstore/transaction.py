@@ -1,6 +1,5 @@
 import uuid
 from lstore import table
-from lstore import page
 
 
 class Transaction:
@@ -18,10 +17,11 @@ class Transaction:
     def add_query(self, query, table_obj, *args):
         self.queries.append((query, table_obj, args))
 
-    """
-    Executes queries sequentially.
-    """
     def run(self):
+        """
+        Executes queries sequentially.
+        Aborts immediately on first failure.
+        """
         try:
             for query, table_obj, args in self.queries:
                 result = query(*args, transaction=self)
@@ -33,7 +33,7 @@ class Transaction:
 
     def abort(self):
         """
-        Undo changes in reverse order.
+        Undo changes in reverse order, then release all locks.
         """
         for entry in reversed(self.rollback_log):
             action = entry[0]
@@ -42,21 +42,21 @@ class Transaction:
                 _, table_obj, base_rid, old_indirection, old_schema = entry
 
                 with table_obj.directory_lock:
-                    if base_rid not in table_obj.page_directory:
-                        continue
-                    base_entry = table_obj.page_directory[base_rid]
+                    base_entry = table_obj.page_directory.get(base_rid)
 
-                page_range_number = base_entry.page_range_number
-                page_range = table_obj.page_range_directory[page_range_number]
+                if base_entry is None:
+                    continue
+
+                page_range = table_obj.page_range_directory[base_entry.page_range_number]
                 data_locations = base_entry.data_locations
 
-                # Restore indirection
+                # Restore base indirection
                 ind_loc = data_locations[table.INDIRECTION_COLUMN]
                 if ind_loc is not None:
                     ind_page = page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
                     ind_page.write(old_indirection, ind_loc.offset)
 
-                # Restore schema encoding
+                # Restore base schema encoding
                 schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
                 if schema_loc is not None:
                     schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
@@ -70,7 +70,8 @@ class Transaction:
 
                 if page_entry is not None:
                     page_range = table_obj.page_range_directory[page_entry.page_range_number]
-                    if rid in page_range.base_records:
+
+                    if hasattr(page_range, "base_records") and rid in page_range.base_records:
                         del page_range.base_records[rid]
 
                 for i, value in enumerate(columns):
@@ -85,23 +86,40 @@ class Transaction:
                 if old_val is not None:
                     table_obj.index.add_to_index(col_idx, old_val, base_rid)
 
-        self._release_all_locks()
         self.rollback_log.clear()
+        self._release_all_locks()
         return False
 
     def commit(self):
-        self._release_all_locks()
+        """
+        Commit transaction by releasing all locks.
+        """
         self.rollback_log.clear()
+        self._release_all_locks()
         return True
 
     def _release_all_locks(self):
+        """
+        Release all locks held by this transaction.
+        Supports either:
+        - release_locks(transaction_id, rid_list)
+        - release_lock(rid, transaction_id)
+        """
         locks_by_table = {}
 
         for table_obj, rid in self.held_locks:
             locks_by_table.setdefault(table_obj, []).append(rid)
 
         for table_obj, rid_list in locks_by_table.items():
-            if table_obj.lock_manager is not None:
-                table_obj.lock_manager.release_locks(self.transaction_id, rid_list)
+            if getattr(table_obj, "lock_manager", None) is None:
+                continue
+
+            lm = table_obj.lock_manager
+
+            if hasattr(lm, "release_locks"):
+                lm.release_locks(self.transaction_id, rid_list)
+            else:
+                for rid in rid_list:
+                    lm.release_lock(rid, self.transaction_id)
 
         self.held_locks.clear()
