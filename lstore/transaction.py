@@ -20,6 +20,7 @@ class Transaction:
     def run(self):
         """
         Executes queries sequentially.
+        Aborts immediately on first failure.
         """
         try:
             for query, table_obj, args in self.queries:
@@ -38,7 +39,7 @@ class Transaction:
             action = entry[0]
 
             if action == "update":
-                _, table_obj, base_rid, old_indirection, old_schema, created_tail_rids = entry
+                _, table_obj, base_rid, old_indirection, old_schema = entry
 
                 with table_obj.directory_lock:
                     base_entry = table_obj.page_directory.get(base_rid)
@@ -49,23 +50,31 @@ class Transaction:
                 page_range = table_obj.page_range_directory[base_entry.page_range_number]
                 data_locations = base_entry.data_locations
 
+                # Restore base indirection
                 ind_loc = data_locations[table.INDIRECTION_COLUMN]
                 if ind_loc is not None:
                     ind_page = page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
                     ind_page.write(old_indirection, ind_loc.offset)
 
+                # Restore base schema encoding
                 schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
                 if schema_loc is not None:
                     schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
                     schema_page.write(old_schema, schema_loc.offset)
 
+                # Remove tail records created by the aborted update
                 with table_obj.directory_lock:
-                    for tail_rid in created_tail_rids:
-                        tail_entry = table_obj.page_directory.pop(tail_rid, None)
+                    to_delete = []
+                    for rid, pd_entry in table_obj.page_directory.items():
+                        if not pd_entry.is_base and getattr(pd_entry, "base_rid", None) == base_rid:
+                            to_delete.append(rid)
+
+                    for rid in to_delete:
+                        tail_entry = table_obj.page_directory.pop(rid, None)
                         if tail_entry is not None:
                             pr = table_obj.page_range_directory[tail_entry.page_range_number]
-                            if hasattr(pr, "tail_records") and tail_rid in pr.tail_records:
-                                del pr.tail_records[tail_rid]
+                            if hasattr(pr, "tail_records") and rid in pr.tail_records:
+                                del pr.tail_records[rid]
 
             elif action == "insert":
                 _, table_obj, rid, primary_key, columns = entry
@@ -95,6 +104,9 @@ class Transaction:
         return False
 
     def commit(self):
+        """
+        Commit transaction by releasing all locks.
+        """
         self.rollback_log.clear()
         self._release_all_locks()
         return True
@@ -110,7 +122,6 @@ class Transaction:
                 continue
 
             lm = table_obj.lock_manager
-
             if hasattr(lm, "release_locks"):
                 lm.release_locks(self.transaction_id, rid_list)
             else:
