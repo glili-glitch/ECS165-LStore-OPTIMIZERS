@@ -51,25 +51,20 @@ class Query:
         t = self.table
         records = []
 
-        with t.directory_lock:
-            candidate_rids = [
-                rid for rid, entry in t.page_directory.items()
-                if entry.is_base
-            ]
+        rid_list = t.index.locate(search_key_index, search_key)
+        if not rid_list:
+            return []
 
         proj = list(projected_columns_index[:t.num_columns])
         if len(proj) < t.num_columns:
             proj += [0] * (t.num_columns - len(proj))
 
-        for rid in candidate_rids:
+        for rid in rid_list:
             if rid not in t.page_directory:
                 continue
 
             columns = t.construct_full_record(rid, 0)
-            if columns is None:
-                continue
-
-            if len(columns) != t.num_columns:
+            if columns is None or len(columns) != t.num_columns:
                 continue
 
             if search_key_index < 0 or search_key_index >= t.num_columns:
@@ -113,10 +108,7 @@ class Query:
                 continue
 
             columns = t.construct_full_record(rid, relative_version)
-            if columns is None:
-                continue
-
-            if len(columns) != t.num_columns:
+            if columns is None or len(columns) != t.num_columns:
                 continue
 
             if search_key_index < 0 or search_key_index >= t.num_columns:
