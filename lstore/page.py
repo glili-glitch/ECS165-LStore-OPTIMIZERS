@@ -45,17 +45,20 @@ class Page:
 
             if offset is None:
                 offset = self.current_offset
+                if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
+                    return False
                 self.current_offset += COLUMN_ENTRY_SIZE
                 self.num_records += 1
+            else:
+                if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
+                    return False
 
-            if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
-                return False
+                # if writing exactly at the logical end, extend the page
+                if offset == self.current_offset:
+                    self.current_offset += COLUMN_ENTRY_SIZE
+                    self.num_records += 1
 
-            if offset == self.num_records * COLUMN_ENTRY_SIZE:
-                self.num_records += 1
-                self.current_offset += COLUMN_ENTRY_SIZE
-
-            value_in_bytes = value.to_bytes(8, byteorder='little')
+            value_in_bytes = int(value).to_bytes(8, byteorder='little', signed=True)
             self.data[offset: offset + COLUMN_ENTRY_SIZE] = value_in_bytes
 
             if Page._bufferpool is not None:
@@ -84,7 +87,7 @@ class Page:
             if Page._bufferpool is not None:
                 Page._bufferpool.access(self)
 
-            return int.from_bytes(value_in_bytes, byteorder='little')
+            return int.from_bytes(value_in_bytes, byteorder='little', signed=True)
         finally:
             if Page._bufferpool is not None:
                 Page._bufferpool.unpin(self.page_id)
