@@ -44,7 +44,6 @@ class Table:
         self.insert_lock = threading.Lock()
         self.record_lock = threading.Lock()
 
-
         self.index = Index(self)
 
         self.merge_threshold = 1000
@@ -53,6 +52,12 @@ class Table:
 
         self.lock_manager = None
         self.directory_lock = threading.Lock()
+
+    def allocate_rid(self):
+        with self._rid_lock:
+            rid = self._next_rid
+            self._next_rid += 1
+            return rid
 
     def get_primary_key(self, rid):
         with self.directory_lock:
@@ -70,12 +75,6 @@ class Table:
             return None
 
         return record.columns[self.key]
-    
-    def allocate_rid(self):
-        with self._rid_lock:
-           rid = self._next_rid
-        self._next_rid += 1
-        return rid
 
     def add_page_range(self, page_range_number):
         with self.directory_lock:
@@ -86,39 +85,42 @@ class Table:
 
     def add_record(self, page_range_number, is_base, *all_columns, record):
         with self.record_lock:
-           with self.directory_lock:
-            pr = self.page_range_directory[page_range_number]
+            with self.directory_lock:
+                pr = self.page_range_directory[page_range_number]
 
-        pages = pr.base_pages if is_base else pr.tail_pages
-        new_locs = [None] * (self.num_columns + 3)
+            pages = pr.base_pages if is_base else pr.tail_pages
+            new_locs = [None] * (self.num_columns + 3)
 
-        for i in range(self.num_columns + 3):
-            if all_columns[i] is None:
-                continue
+            for i in range(self.num_columns + 3):
+                if all_columns[i] is None:
+                    continue
 
-            last_page = pages[i][-1]
-            if not last_page.has_capacity():
-                pr.add_page(is_base, i)
                 last_page = pages[i][-1]
+                if not last_page.has_capacity():
+                    pr.add_page(is_base, i)
+                    last_page = pages[i][-1]
 
-            new_locs[i] = PageCoord(len(pages[i]) - 1, last_page.current_offset)
-            last_page.write(all_columns[i])
+                new_locs[i] = PageCoord(len(pages[i]) - 1, last_page.current_offset)
+                last_page.write(all_columns[i])
 
-        with self.directory_lock:
-            self.page_directory[record.rid] = PageDirectoryEntry(
-                page_range_number=page_range_number,
-                is_base=is_base,
-                data_locations=new_locs
-            )
+            with self.directory_lock:
+                self.page_directory[record.rid] = PageDirectoryEntry(
+                    page_range_number=page_range_number,
+                    is_base=is_base,
+                    data_locations=new_locs
+                )
 
-        pr.add_record(is_base, record)
+            pr.add_record(is_base, record)
 
     def construct_full_record(self, rid, relative_version=0):
         with self.directory_lock:
             base_entry = self.page_directory.get(rid)
 
-            if not base_entry or not base_entry.is_base:
-                return None
+        if not base_entry or not base_entry.is_base:
+            return None
+
+        if relative_version > 0:
+            return None
 
         def _read(entry, col_idx):
             loc = entry.data_locations[col_idx]
@@ -138,18 +140,13 @@ class Table:
 
             return pages[col_idx][loc.page_number].read(loc.offset // 8)
 
-        # relative_version must be 0 or negative
-        if relative_version > 0:
-            return None
-
-        # base state
         base_values = [_read(base_entry, i + 3) for i in range(self.num_columns)]
 
         latest_tail_rid = _read(base_entry, INDIRECTION_COLUMN)
+
         if latest_tail_rid in (None, 0, rid):
             return base_values
 
-        # collect tail entries from latest -> oldest
         tail_chain = []
         visited = set()
         curr_rid = latest_tail_rid
@@ -170,8 +167,6 @@ class Table:
                 break
             curr_rid = next_rid
 
-        # Build version snapshots from oldest -> newest
-        # versions[0] = original base
         versions = [base_values[:]]
         current = base_values[:]
 
@@ -182,10 +177,6 @@ class Table:
                     current[i] = val
             versions.append(current[:])
 
-        # version semantics:
-        #  0  -> latest
-        # -1  -> one version before latest
-        # -2  -> two versions before latest
         latest_index = len(versions) - 1
         target_index = latest_index + relative_version
 
@@ -193,6 +184,7 @@ class Table:
             target_index = 0
 
         return versions[target_index]
+
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
         if full_record is None:
@@ -200,10 +192,8 @@ class Table:
         return full_record[column_number]
 
     def trigger_merge_check(self):
-        # TEMPORARILY DISABLED to avoid background merge freezes while debugging M3
         return
 
-        
     def _bg_merge_task(self):
         results = self._merge()
         for pr_num, copied_pages, max_tail_rid in results:
@@ -276,27 +266,22 @@ class Table:
 
         return pr_num, copied_pages, current_max_rid
 
-    # --- ADDED METHODS FOR M3 SUPPORT ---
-
     def rollback_record(self, rid, old_indirection, old_schema):
-        """Restores metadata in Base Page after a transaction abort."""
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-            if not entry: return
+            if not entry:
+                return
             pr = self.page_range_directory[entry.page_range_number]
-            
-            # Reset Indirection using your Page.write(value, offset)
+
             ind_loc = entry.data_locations[INDIRECTION_COLUMN]
             ind_page = pr.base_pages[INDIRECTION_COLUMN][ind_loc.page_number]
             ind_page.write(old_indirection, offset=ind_loc.offset)
-            
-            # Reset Schema Encoding using your Page.write(value, offset)
+
             sch_loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
             sch_page = pr.base_pages[SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
             sch_page.write(old_schema, offset=sch_loc.offset)
 
     def set_indirection(self, rid, val):
-        """Updates the indirection pointer to a new tail RID."""
         with self.directory_lock:
             e = self.page_directory.get(rid)
             pr = self.page_range_directory[e.page_range_number]
@@ -304,7 +289,6 @@ class Table:
             pr.base_pages[INDIRECTION_COLUMN][l.page_number].write(val, offset=l.offset)
 
     def set_schema(self, rid, val):
-        """Updates the schema encoding bitmask."""
         with self.directory_lock:
             e = self.page_directory.get(rid)
             pr = self.page_range_directory[e.page_range_number]
@@ -312,7 +296,6 @@ class Table:
             pr.base_pages[SCHEMA_ENCODING_COLUMN][l.page_number].write(val, offset=l.offset)
 
     def delete_record(self, rid, columns):
-        """Removes a record from the directory and index (for undoing inserts)."""
         with self.directory_lock:
             entry = self.page_directory.pop(rid, None)
             if entry:
@@ -326,7 +309,8 @@ class Table:
     def get_indirection(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-        if not entry: return 0
+        if not entry:
+            return 0
         pr = self.page_range_directory[entry.page_range_number]
         loc = entry.data_locations[INDIRECTION_COLUMN]
         return pr.base_pages[INDIRECTION_COLUMN][loc.page_number].read(loc.offset // 8)
@@ -334,7 +318,8 @@ class Table:
     def get_schema(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-        if not entry: return 0
+        if not entry:
+            return 0
         pr = self.page_range_directory[entry.page_range_number]
         loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
         return pr.base_pages[SCHEMA_ENCODING_COLUMN][loc.page_number].read(loc.offset // 8)
