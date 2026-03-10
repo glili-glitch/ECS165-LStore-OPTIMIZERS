@@ -17,7 +17,7 @@ class BufferPool:
         self.dirty_pages = set()        # set of dirty page_ids
         self.pin_counts = {}            # page_id -> pin count
         self.pool_lock = threading.RLock()
-        self.page_latches = {}          # page_id -> threading.Lock for I/O serialization
+        self.page_latches = {}          # page_id -> threading.Lock for I/O serializatio
         if disk_path:
             os.makedirs(os.path.join(disk_path, 'pages'), exist_ok=True)
 
