@@ -10,144 +10,137 @@ class Query:
         self.table = table
 
     def insert(self, *columns, transaction=None):
-        target_table = self.table
+        t = self.table
 
-        if len(columns) != target_table.num_columns:
+        if len(columns) != t.num_columns:
             return False
 
-        existing = target_table.index.locate(target_table.key, columns[target_table.key])
+        primary_key = columns[t.key]
+
+        existing = t.index.locate(t.key, primary_key)
         if existing:
             return False
 
-        primary_key = columns[target_table.key]
-        page_range_number = primary_key // table.NUM_RECORDS_PER_RANGE
-
-        if page_range_number not in target_table.page_range_directory:
-            target_table.add_page_range(page_range_number)
-
         rid = next(_rid_counter)
 
-        if transaction:
-            if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
-                return False
-            transaction.held_locks.add((target_table, rid))
+        # Use RID-based physical placement, not primary-key-based placement
+        page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
+
+        if page_range_number not in t.page_range_directory:
+            t.add_page_range(page_range_number)
 
         schema_encoding = 0
         col_list = list(columns)
         all_columns = [rid, rid, schema_encoding] + col_list
 
-        target_table.add_record(
+        # Insert first so the record actually exists before lock bookkeeping matters
+        t.add_record(
             page_range_number,
             True,
             *all_columns,
             record=Record(rid, primary_key, col_list)
         )
 
-        for i, value in enumerate(columns):
-            target_table.index.add_to_index(i, value, rid)
-
+        # Acquire lock after record creation
         if transaction:
-            transaction.rollback_log.append(("insert", target_table, rid, primary_key, col_list))
+            if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
+                return False
+            transaction.held_locks.add((t, rid))
+            transaction.rollback_log.append(("insert", t, rid, primary_key, col_list))
+
+        for i, value in enumerate(columns):
+            t.index.add_to_index(i, value, rid)
 
         return True
 
     def select(self, search_key, search_key_index, projected_columns_index, transaction=None):
-        target_table = self.table
-        rid_list = target_table.index.locate(search_key_index, search_key)
+        t = self.table
+        rid_list = t.index.locate(search_key_index, search_key)
 
         if not rid_list:
             rid_list = []
-            with target_table.directory_lock:
-                for rid, entry in target_table.page_directory.items():
-                    if entry.is_base and target_table.get_column_value(rid, search_key_index, 0) == search_key:
+            with t.directory_lock:
+                for rid, entry in t.page_directory.items():
+                    if entry.is_base and t.get_column_value(rid, search_key_index, 0) == search_key:
                         rid_list.append(rid)
 
         records = []
-        directory = target_table.page_directory
 
         for rid in rid_list:
-            if rid not in directory:
+            if rid not in t.page_directory:
                 continue
 
             if transaction:
-                if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((target_table, rid))
+                transaction.held_locks.add((t, rid))
 
-            columns = target_table.construct_full_record(rid, 0)
+            columns = t.construct_full_record(rid, 0)
             if columns is None:
                 continue
 
-            primary_key = target_table.get_primary_key(rid)
-
-            # Keep full record length; fill unprojected columns with None
+            primary_key = t.get_primary_key(rid)
             res_cols = [
                 columns[i] if projected_columns_index[i] == 1 else None
                 for i in range(len(projected_columns_index))
             ]
-
             records.append(Record(rid, primary_key, res_cols))
 
         return records
 
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
-        target_table = self.table
-        rid_list = target_table.index.locate(search_key_index, search_key)
+        t = self.table
+        rid_list = t.index.locate(search_key_index, search_key)
 
         if not rid_list:
             rid_list = []
-            with target_table.directory_lock:
-                for rid, entry in target_table.page_directory.items():
-                    if entry.is_base and target_table.get_column_value(rid, search_key_index, relative_version) == search_key:
+            with t.directory_lock:
+                for rid, entry in t.page_directory.items():
+                    if entry.is_base and t.get_column_value(rid, search_key_index, relative_version) == search_key:
                         rid_list.append(rid)
 
         records = []
-        directory = target_table.page_directory
 
         for rid in rid_list:
-            if rid not in directory:
+            if rid not in t.page_directory:
                 continue
 
             if transaction:
-                if not target_table.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((target_table, rid))
+                transaction.held_locks.add((t, rid))
 
-            columns = target_table.construct_full_record(rid, relative_version)
+            columns = t.construct_full_record(rid, relative_version)
             if columns is None:
                 continue
 
-            primary_key = target_table.get_primary_key(rid)
-
-            # Keep full record length; fill unprojected columns with None
+            primary_key = t.get_primary_key(rid)
             res_cols = [
                 columns[i] if projected_columns_index[i] == 1 else None
                 for i in range(len(projected_columns_index))
             ]
-
             records.append(Record(rid, primary_key, res_cols))
 
         return records
 
     def delete(self, primary_key, transaction=None):
-        target_table = self.table
-        rids = target_table.index.locate(target_table.key, primary_key)
-
+        t = self.table
+        rids = t.index.locate(t.key, primary_key)
         if not rids:
             return False
 
         base_rid = rids[0]
 
         if transaction:
-            if not target_table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+            if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((target_table, base_rid))
+            transaction.held_locks.add((t, base_rid))
 
-        # Your delete logic is still weak structurally, but leaving it close to your design
-        self.update(primary_key, *([None] * target_table.num_columns), transaction=transaction)
+        # Keep close to your original design
+        self.update(primary_key, *([None] * t.num_columns), transaction=transaction)
 
-        with target_table.directory_lock:
-            target_table.page_directory.pop(base_rid, None)
+        with t.directory_lock:
+            t.page_directory.pop(base_rid, None)
 
         return True
 
@@ -155,23 +148,30 @@ class Query:
         t = self.table
         rids = t.index.locate(t.key, primary_key)
 
-        if not rids or len(columns) != t.num_columns or columns[t.key] is not None:
+        if not rids:
             return False
 
-        # Reject pure no-op updates
+        if len(columns) != t.num_columns:
+            return False
+
+        # Primary key column should not be updated
+        if columns[t.key] is not None:
+            return False
+
+        # No-op updates should fail
         if not any(val is not None for val in columns):
             return False
 
         base_rid = rids[0]
-        current_values = t.construct_full_record(base_rid, 0)
-
-        if current_values is None:
-            return False
 
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((t, base_rid))
+
+        current_values = t.construct_full_record(base_rid, 0)
+        if current_values is None:
+            return False
 
         base_entry = t.page_directory[base_rid]
         p_range = t.page_range_directory[base_entry.page_range_number]
@@ -192,9 +192,9 @@ class Query:
         if transaction:
             transaction.rollback_log.append(("update", t, base_rid, old_ind, old_sch))
 
+        n_cols = t.num_columns
         sch_int = 0
         new_base_sch = old_sch
-        n_cols = t.num_columns
 
         for i, val in enumerate(columns):
             if val is not None:
@@ -204,14 +204,13 @@ class Query:
 
         copy_tail = None
 
-        if not old_sch and any(v is not None for v in columns):
+        # First update on a base record: create a full snapshot tail
+        if not old_sch:
             copy_cols = [
                 p_range.base_pages[i + 3][locs[i + 3].page_number].read(locs[i + 3].offset // ent_size)
                 for i in range(n_cols)
             ]
-
             copy_tail = Record(next(_rid_counter), primary_key, copy_cols)
-
             t.add_record(
                 base_entry.page_range_number,
                 False,
@@ -236,6 +235,7 @@ class Query:
             locs[ind_col] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
             locs[sch_col] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
+        # Update secondary indexes using current visible values
         for i, new_val in enumerate(columns):
             if new_val is not None:
                 old_val = current_values[i]
@@ -255,18 +255,22 @@ class Query:
 
         for key in range(start_range, end_range + 1):
             rids = t.index.locate(t.key, key)
-            if not rids or rids[0] not in t.page_directory:
+            if not rids:
                 continue
 
             rid = rids[0]
+            if rid not in t.page_directory:
+                continue
 
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((t, rid))
 
+            value = t.get_column_value(rid, aggregate_column_index, 0)
+            if value is not None:
+                total += value
             found = True
-            total += (t.get_column_value(rid, aggregate_column_index, 0) or 0)
 
         return total if found else False
 
@@ -277,27 +281,30 @@ class Query:
 
         for key in range(start_range, end_range + 1):
             rids = t.index.locate(t.key, key)
-            if not rids or rids[0] not in t.page_directory:
+            if not rids:
                 continue
 
             rid = rids[0]
+            if rid not in t.page_directory:
+                continue
 
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks.add((t, rid))
 
+            value = t.get_column_value(rid, aggregate_column_index, relative_version)
+            if value is not None:
+                total += value
             found = True
-            total += (t.get_column_value(rid, aggregate_column_index, relative_version) or 0)
 
         return total if found else False
 
     def increment(self, key, column, transaction=None):
         res = self.select(key, self.table.key, [1] * self.table.num_columns, transaction=transaction)
+        if not res:
+            return False
 
-        if res:
-            updated = [None] * self.table.num_columns
-            updated[column] = res[0].columns[column] + 1
-            return self.update(key, *updated, transaction=transaction)
-
-        return False
+        updated = [None] * self.table.num_columns
+        updated[column] = res[0].columns[column] + 1
+        return self.update(key, *updated, transaction=transaction)
