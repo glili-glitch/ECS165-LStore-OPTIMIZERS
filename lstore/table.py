@@ -42,6 +42,7 @@ class Table:
         self._next_rid = 1
         self._rid_lock = threading.Lock()
         self.insert_lock = threading.Lock()
+        self.record_lock = threading.Lock()
 
 
         self.index = Index(self)
@@ -84,7 +85,8 @@ class Table:
             return True
 
     def add_record(self, page_range_number, is_base, *all_columns, record):
-        with self.directory_lock:
+        with self.record_lock:
+           with self.directory_lock:
             pr = self.page_range_directory[page_range_number]
 
         pages = pr.base_pages if is_base else pr.tail_pages

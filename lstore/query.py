@@ -1,7 +1,5 @@
-
 from lstore import table, page
 from lstore.table import Record
-
 
 
 class Query:
@@ -16,54 +14,51 @@ class Query:
 
         primary_key = columns[t.key]
 
-        existing = t.index.locate(t.key, primary_key)
-        if existing:
-            return False
-
-        rid =t.allocate_rid()
-
-        
-        page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
-
-        if page_range_number not in t.page_range_directory:
-            t.add_page_range(page_range_number)
-
-        schema_encoding = 0
-        col_list = list(columns)
-        all_columns = [rid, rid, schema_encoding] + col_list
-
-        
-        if transaction:
-            if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
+        # Make duplicate-check + RID allocation + insert atomic
+        with t.insert_lock:
+            existing = t.index.locate(t.key, primary_key)
+            if existing:
                 return False
-            transaction.held_locks[(t, rid)] = 'X'
-            transaction.rollback_log.append(("insert", t, rid, col_list))
-        
 
-        t.add_record(
-            page_range_number,
-            True,
-            *all_columns,
-            record=Record(rid, primary_key, col_list)
-        )
+            rid = t.allocate_rid()
+            page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
 
-        for i, value in enumerate(columns):
-            t.index.add_to_index(i, value, rid)
+            if page_range_number not in t.page_range_directory:
+                t.add_page_range(page_range_number)
+
+            schema_encoding = 0
+            col_list = list(columns)
+            all_columns = [rid, rid, schema_encoding] + col_list
+
+            if transaction:
+                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
+                    return False
+                transaction.held_locks[(t, rid)] = 'X'
+                transaction.rollback_log.append(("insert", t, rid, col_list))
+
+            t.add_record(
+                page_range_number,
+                True,
+                *all_columns,
+                record=Record(rid, primary_key, col_list)
+            )
+
+            for i, value in enumerate(columns):
+                t.index.add_to_index(i, value, rid)
 
         return True
 
     def select(self, search_key, search_key_index, projected_columns_index, transaction=None):
         t = self.table
-        rid_list = t.index.locate(search_key_index, search_key)
+        records = []
 
+        rid_list = t.index.locate(search_key_index, search_key)
         if not rid_list:
             rid_list = []
             with t.directory_lock:
                 for rid, entry in t.page_directory.items():
                     if entry.is_base:
                         rid_list.append(rid)
-
-        records = []
 
         for rid in rid_list:
             if rid not in t.page_directory:
@@ -83,13 +78,20 @@ class Query:
                 continue
 
             primary_key = t.get_primary_key(rid)
+
+            proj = list(projected_columns_index[:t.num_columns])
+            if len(proj) < t.num_columns:
+                proj += [0] * (t.num_columns - len(proj))
+
             res_cols = [
-                columns[i] if projected_columns_index[i] == 1 else None
-                for i in range(len(projected_columns_index))
+                columns[i] if proj[i] == 1 else None
+                for i in range(t.num_columns)
             ]
+
             records.append(Record(rid, primary_key, res_cols))
 
         return records
+
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
         t = self.table
         records = []
@@ -118,13 +120,20 @@ class Query:
                 continue
 
             primary_key = t.get_primary_key(rid)
+
+            proj = list(projected_columns_index[:t.num_columns])
+            if len(proj) < t.num_columns:
+                proj += [0] * (t.num_columns - len(proj))
+
             res_cols = [
-                columns[i] if projected_columns_index[i] == 1 else None
-                for i in range(len(projected_columns_index))
+                columns[i] if proj[i] == 1 else None
+                for i in range(t.num_columns)
             ]
+
             records.append(Record(rid, primary_key, res_cols))
 
         return records
+
     def delete(self, primary_key, transaction=None):
         t = self.table
         rids = t.index.locate(t.key, primary_key)
@@ -169,12 +178,10 @@ class Query:
 
         base_rid = rids[0]
 
-        # LOCKING 
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
-        #
 
         current_values = t.construct_full_record(base_rid, 0)
         if current_values is None:
@@ -188,7 +195,6 @@ class Query:
         sch_col = table.SCHEMA_ENCODING_COLUMN
         ent_size = page.COLUMN_ENTRY_SIZE
 
-        # READ OLD METADATA FOR ROLLBACK
         ind_loc = locs[ind_col]
         ind_page = p_range.base_pages[ind_col][ind_loc.page_number]
         old_ind = ind_page.read(ind_loc.offset // ent_size)
@@ -197,10 +203,8 @@ class Query:
         sch_page = p_range.base_pages[sch_col][sch_loc.page_number]
         old_sch = sch_page.read(sch_loc.offset // ent_size)
 
-        # LOGGING 
         if transaction:
             transaction.rollback_log.append(("update", t, base_rid, old_ind, old_sch))
-        #
 
         n_cols = t.num_columns
         sch_int = 0
@@ -237,7 +241,6 @@ class Query:
             record=tail_rec
         )
 
-        # WRITE NEW METADATA
         ind_page.write(tail_rec.rid, ind_loc.offset)
         sch_page.write(new_base_sch, sch_loc.offset)
 
@@ -271,12 +274,10 @@ class Query:
             if rid not in t.page_directory:
                 continue
 
-            #LOCKING 
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
-            
 
             value = t.get_column_value(rid, aggregate_column_index, 0)
             if value is not None:
@@ -299,12 +300,10 @@ class Query:
             if rid not in t.page_directory:
                 continue
 
-            #LOCKING 
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
-            
 
             value = t.get_column_value(rid, aggregate_column_index, relative_version)
             if value is not None:
