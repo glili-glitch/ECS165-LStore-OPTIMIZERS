@@ -2,7 +2,7 @@ import threading
 
 class LockManager:
     def __init__(self):
-        self.locks = {}  # RID -> {'type': 'S'/'X', 'holders': set(transaction_ids)}
+        self.locks = {}  # RID -> {'type': 'S'/'X', 'holders': set(transaction_ids)
         self.lock_mutex = threading.Lock()
 
     def acquire_lock(self, rid, transaction_id, lock_type):
