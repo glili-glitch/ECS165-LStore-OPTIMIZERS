@@ -104,13 +104,20 @@ class Query:
     def delete(self, primary_key, transaction=None):
         target_table = self.table
         rids = target_table.index.locate(target_table.key, primary_key)
-        if not rids: return False
+        if not rids:
+            return False
 
         base_rid = rids[0]
         if transaction:
             if not target_table.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks.add((target_table, base_rid))
+
+        with target_table.directory_lock:
+            old_entry = target_table.page_directory.get(base_rid)
+
+        if transaction and old_entry is not None:
+            transaction.rollback_log.append(("delete", target_table, base_rid, old_entry))
 
         self.update(primary_key, *([None] * target_table.num_columns), transaction=transaction)
 
