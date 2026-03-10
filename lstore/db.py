@@ -18,11 +18,14 @@ class Database:
 
     def open(self, path):
         self.path = path
+
+        Page._next_id = 1
         # Create directory if it doesn't exist
+
         if not os.path.exists(path):
             os.makedirs(path,exist_ok=True)
 
-            Page._next_id = 1
+            
 
         self.bufferpool = BufferPool(disk_path=path)
         Page._bufferpool = self.bufferpool
