@@ -174,7 +174,7 @@ class Query:
             locs[ind_col] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
             locs[sch_col] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
-        # INDEX UPDATE LOGIC: Use Version 1 to find the 'real' old value
+        # INDEX UPDATE LOGIC: Use Version 1 to find the real old value
         for i, new_val in enumerate(columns):
             if new_val is not None:
                 old_val = t.get_column_value(base_rid, i, 1) 
