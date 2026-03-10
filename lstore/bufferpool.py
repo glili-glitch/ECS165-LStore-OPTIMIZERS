@@ -130,6 +130,9 @@ class BufferPool:
         with latch:
             page_path = self._get_page_path(page.page_id)
             if page_path:
+                # FIX: Create the directory if it doesn't exist
+                os.makedirs(os.path.dirname(page_path), exist_ok=True)
+                
                 with open(page_path, 'wb') as f:
                     f.write(bytes(page.data))
 

@@ -135,29 +135,33 @@ class Query:
         p_range = t.page_range_directory[base_entry.page_range_number]
         locs = base_entry.data_locations
 
-        ind_loc = locs[table.INDIRECTION_COLUMN]
-        ind_page = p_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
-        old_ind = ind_page.read(ind_loc.offset // page.COLUMN_ENTRY_SIZE)
+        # Localize frequently used constants/attributes
+        ind_col, sch_col, ent_size = table.INDIRECTION_COLUMN, table.SCHEMA_ENCODING_COLUMN, page.COLUMN_ENTRY_SIZE
+        
+        ind_loc = locs[ind_col]
+        ind_page = p_range.base_pages[ind_col][ind_loc.page_number]
+        old_ind = ind_page.read(ind_loc.offset // ent_size)
 
-        sch_loc = locs[table.SCHEMA_ENCODING_COLUMN]
-        sch_page = p_range.base_pages[table.SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
-        old_sch = sch_page.read(sch_loc.offset // page.COLUMN_ENTRY_SIZE)
+        sch_loc = locs[sch_col]
+        sch_page = p_range.base_pages[sch_col][sch_loc.page_number]
+        old_sch = sch_page.read(sch_loc.offset // ent_size)
 
         if transaction:
             transaction.rollback_log.append(("update", t, base_rid, old_ind, old_sch))
 
-        sch_int, new_base_sch, num_cols = 0, old_sch, t.num_columns
+        sch_int, new_base_sch, n_cols = 0, old_sch, t.num_columns
         for i, val in enumerate(columns):
             if val is not None:
-                mask = 1 << (num_cols - 1 - i)
+                mask = 1 << (n_cols - 1 - i)
                 sch_int |= mask
                 new_base_sch |= mask
 
         copy_tail = None
-        if old_sch == 0 and any(v is not None for v in columns):
-            copy_cols = [p_range.base_pages[i+3][locs[i+3].page_number].read(locs[i+3].offset // page.COLUMN_ENTRY_SIZE) for i in range(num_cols)]
+        if not old_sch and any(v is not None for v in columns):
+            # Optimized list comprehension for base value copying
+            copy_cols = [p_range.base_pages[i+3][locs[i+3].page_number].read(locs[i+3].offset // ent_size) for i in range(n_cols)]
             copy_tail = Record(next(_rid_counter), primary_key, copy_cols)
-            t.add_record(base_entry.page_range_number, False, *([copy_tail.rid, base_rid, (1 << num_cols) - 1] + copy_cols), record=copy_tail)
+            t.add_record(base_entry.page_range_number, False, *([copy_tail.rid, base_rid, (1 << n_cols) - 1] + copy_cols), record=copy_tail)
 
         prev_rid = copy_tail.rid if copy_tail else old_ind
         tail_rec = Record(next(_rid_counter), primary_key, list(columns))
@@ -167,12 +171,13 @@ class Query:
         sch_page.write(new_base_sch, sch_loc.offset)
 
         with t.directory_lock:
-            locs[table.INDIRECTION_COLUMN] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
-            locs[table.SCHEMA_ENCODING_COLUMN] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
+            locs[ind_col] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
+            locs[sch_col] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
+        # INDEX UPDATE LOGIC: Use Version 1 to find the 'real' old value
         for i, new_val in enumerate(columns):
             if new_val is not None:
-                old_val = t.get_column_value(base_rid, i, 0)
+                old_val = t.get_column_value(base_rid, i, 1) 
                 if old_val is not None and new_val != old_val:
                     if transaction: transaction.rollback_log.append(("index_update", t, base_rid, i, old_val, new_val))
                     t.index.remove_from_index(i, old_val, base_rid)

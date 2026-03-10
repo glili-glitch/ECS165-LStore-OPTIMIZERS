@@ -40,7 +40,10 @@ class LockManager:
     def release_locks(self, transaction_id, rids):
         """Release all locks held by a specific transaction."""
         with self.lock_mutex:
-            for rid in rids:
+            
+            for item in rids:
+                rid = item[1] if isinstance(item, tuple) else item
+
                 if rid in self.locks:
                     lock = self.locks[rid]
                     if transaction_id in lock['holders']:
