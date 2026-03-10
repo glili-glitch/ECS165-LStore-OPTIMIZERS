@@ -104,8 +104,8 @@ class Table:
         with self.directory_lock:
             base_entry = self.page_directory.get(rid)
 
-        if not base_entry or not base_entry.is_base:
-            return None
+            if not base_entry or not base_entry.is_base:
+                return None
 
         def _read(entry, col_idx):
             loc = entry.data_locations[col_idx]
@@ -125,14 +125,18 @@ class Table:
 
             return pages[col_idx][loc.page_number].read(loc.offset // 8)
 
-        # start from base record
-        result = [_read(base_entry, i + 3) for i in range(self.num_columns)]
+        # relative_version must be 0 or negative
+        if relative_version > 0:
+            return None
+
+        # base state
+        base_values = [_read(base_entry, i + 3) for i in range(self.num_columns)]
 
         latest_tail_rid = _read(base_entry, INDIRECTION_COLUMN)
         if latest_tail_rid in (None, 0, rid):
-            return result
+            return base_values
 
-        # collect tails from latest -> oldest
+        # collect tail entries from latest -> oldest
         tail_chain = []
         visited = set()
         curr_rid = latest_tail_rid
@@ -153,30 +157,29 @@ class Table:
                 break
             curr_rid = next_rid
 
-        # version semantics:
-        #  0  -> latest
-        # -1  -> one version older
-        # -2  -> two versions older
-        if relative_version > 0:
-            return None
+        # Build version snapshots from oldest -> newest
+        # versions[0] = original base
+        versions = [base_values[:]]
+        current = base_values[:]
 
-        skip = abs(relative_version)
-
-        # if asking older than available history, fall back to oldest reachable version
-        if skip > len(tail_chain):
-            skip = len(tail_chain)
-
-        usable_chain = tail_chain[skip:]   # still latest->oldest among remaining tails
-
-        # apply remaining tails oldest -> newest
-        for tail_entry in reversed(usable_chain):
+        for tail_entry in reversed(tail_chain):
             for i in range(self.num_columns):
                 val = _read(tail_entry, i + 3)
                 if val is not None:
-                    result[i] = val
+                    current[i] = val
+            versions.append(current[:])
 
-        return result
+        # version semantics:
+        #  0  -> latest
+        # -1  -> one version before latest
+        # -2  -> two versions before latest
+        latest_index = len(versions) - 1
+        target_index = latest_index + relative_version
 
+        if target_index < 0:
+            target_index = 0
+
+        return versions[target_index]
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
         if full_record is None:

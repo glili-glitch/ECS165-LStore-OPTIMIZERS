@@ -17,7 +17,8 @@ class Transaction:
                 if result is False:
                     return self.abort()
             return self.commit()
-        except Exception:
+        except Exception as e:
+            print("Transaction error:", e)
             return self.abort()
 
     def abort(self):

@@ -134,14 +134,18 @@ class Query:
 
         base_rid = rids[0]
 
-        
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
-        
 
-        self.update(primary_key, *([None] * t.num_columns), transaction=transaction)
+        current_values = t.construct_full_record(base_rid, 0)
+        if current_values is None:
+            return False
+
+        for i, value in enumerate(current_values):
+            if value is not None:
+                t.index.remove_from_index(i, value, base_rid)
 
         with t.directory_lock:
             t.page_directory.pop(base_rid, None)
