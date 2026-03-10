@@ -39,6 +39,11 @@ class Table:
         self.page_directory = {}
         self.page_range_directory = {}
 
+        self._next_rid = 1
+        self._rid_lock = threading.Lock()
+        self.insert_lock = threading.Lock()
+
+
         self.index = Index(self)
 
         self.merge_threshold = 1000
@@ -64,6 +69,12 @@ class Table:
             return None
 
         return record.columns[self.key]
+    
+    def allocate_rid(self):
+        with self._rid_lock:
+           rid = self._next_rid
+        self._next_rid += 1
+        return rid
 
     def add_page_range(self, page_range_number):
         with self.directory_lock:
