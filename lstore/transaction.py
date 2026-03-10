@@ -1,103 +1,67 @@
 import uuid
-from lstore import table
-
 
 class Transaction:
     """
     Creates a transaction object.
+    Ensures ACID properties by holding all locks until commit/abort (Strict 2PL).
     """
 
-    def __init__(self, db=None):
-        self.db = db
+    def __init__(self):
         self.queries = []
         self.transaction_id = uuid.uuid4()
-        self.held_locks = set()   # (table_obj, rid)
+        # Maps (table_obj, rid) -> lock_type ('S' for Shared, 'X' for Exclusive)
+        self.held_locks = {}  
+        # Stores (action, table, rid, old_value, old_schema)
         self.rollback_log = []
 
     def add_query(self, query, table_obj, *args):
+        """
+        Adds a query to the transaction's execution list.
+        """
         self.queries.append((query, table_obj, args))
 
     def run(self):
         """
         Executes queries sequentially.
-        Aborts immediately on first failure.
+        If any query fails (e.g., lock timeout or constraint violation), aborts.
         """
         try:
             for query, table_obj, args in self.queries:
+                # The query MUST take 'transaction=self' as a keyword argument
                 result = query(*args, transaction=self)
                 if result is False:
                     return self.abort()
             return self.commit()
-        except Exception:
+        except Exception as e:
+            # Catching unexpected errors to ensure we always release locks
+            print(f"Transaction execution error: {e}")
             return self.abort()
 
     def abort(self):
         """
-        Undo changes in reverse order.
+        Undo changes in REVERSE order to ensure data consistency.
+        Uses Table-level rollback to avoid physical page corruption.
         """
         for entry in reversed(self.rollback_log):
             action = entry[0]
 
             if action == "update":
-                _, table_obj, base_rid, old_indirection, old_schema = entry
-
-                with table_obj.directory_lock:
-                    base_entry = table_obj.page_directory.get(base_rid)
-
-                if base_entry is None:
-                    continue
-
-                page_range = table_obj.page_range_directory[base_entry.page_range_number]
-                data_locations = base_entry.data_locations
-
-                # Restore base indirection
-                ind_loc = data_locations[table.INDIRECTION_COLUMN]
-                if ind_loc is not None:
-                    ind_page = page_range.base_pages[table.INDIRECTION_COLUMN][ind_loc.page_number]
-                    ind_page.write(old_indirection, ind_loc.offset)
-
-                # Restore base schema encoding
-                schema_loc = data_locations[table.SCHEMA_ENCODING_COLUMN]
-                if schema_loc is not None:
-                    schema_page = page_range.base_pages[table.SCHEMA_ENCODING_COLUMN][schema_loc.page_number]
-                    schema_page.write(old_schema, schema_loc.offset)
-
-                # Remove tail records created by the aborted update
-                with table_obj.directory_lock:
-                    to_delete = []
-                    for rid, pd_entry in table_obj.page_directory.items():
-                        if not pd_entry.is_base and getattr(pd_entry, "base_rid", None) == base_rid:
-                            to_delete.append(rid)
-
-                    for rid in to_delete:
-                        tail_entry = table_obj.page_directory.pop(rid, None)
-                        if tail_entry is not None:
-                            pr = table_obj.page_range_directory[tail_entry.page_range_number]
-                            if hasattr(pr, "tail_records") and rid in pr.tail_records:
-                                del pr.tail_records[rid]
+                # entry: ("update", table_obj, rid, old_indirection, old_schema)
+                _, table_obj, rid, old_indirection, old_schema = entry
+                table_obj.rollback_record(rid, old_indirection, old_schema)
 
             elif action == "insert":
-                _, table_obj, rid, primary_key, columns = entry
-
-                with table_obj.directory_lock:
-                    page_entry = table_obj.page_directory.pop(rid, None)
-
-                if page_entry is not None:
-                    page_range = table_obj.page_range_directory[page_entry.page_range_number]
-                    if hasattr(page_range, "base_records") and rid in page_range.base_records:
-                        del page_range.base_records[rid]
-
-                for i, value in enumerate(columns):
-                    table_obj.index.remove_from_index(i, value, rid)
+                # entry: ("insert", table_obj, rid, [column_values])
+                _, table_obj, rid, values = entry
+                table_obj.delete_record(rid, values)
 
             elif action == "index_update":
-                _, table_obj, base_rid, col_idx, old_val, new_val = entry
-
+                # entry: ("index_update", table_obj, rid, col_idx, old_val, new_val)
+                _, table_obj, rid, col_idx, old_val, new_val = entry
                 if new_val is not None:
-                    table_obj.index.remove_from_index(col_idx, new_val, base_rid)
-
+                    table_obj.index.remove_from_index(col_idx, new_val, rid)
                 if old_val is not None:
-                    table_obj.index.add_to_index(col_idx, old_val, base_rid)
+                    table_obj.index.add_to_index(col_idx, old_val, rid)
 
         self.rollback_log.clear()
         self._release_all_locks()
@@ -105,27 +69,25 @@ class Transaction:
 
     def commit(self):
         """
-        Commit transaction by releasing all locks.
+        Finalize the transaction by clearing the log and releasing all locks.
         """
         self.rollback_log.clear()
         self._release_all_locks()
         return True
 
     def _release_all_locks(self):
-        locks_by_table = {}
+        """
+        Releases every lock acquired during the transaction life cycle.
+        """
+        # Group RIDs by table to minimize lock manager calls
+        lock_groups = {}
+        for (table_obj, rid) in self.held_locks.keys():
+            if table_obj not in lock_groups:
+                lock_groups[table_obj] = []
+            lock_groups[table_obj].append(rid)
 
-        for table_obj, rid in self.held_locks:
-            locks_by_table.setdefault(table_obj, []).append(rid)
-
-        for table_obj, rid_list in locks_by_table.items():
-            if getattr(table_obj, "lock_manager", None) is None:
-                continue
-
-            lm = table_obj.lock_manager
-            if hasattr(lm, "release_locks"):
-                lm.release_locks(self.transaction_id, rid_list)
-            else:
-                for rid in rid_list:
-                    lm.release_lock(rid, self.transaction_id)
-
+        for table_obj, rids in lock_groups.items():
+            # Release all locks for this transaction on this specific table
+            table_obj.lock_manager.release_locks(self.transaction_id, rids)
+        
         self.held_locks.clear()
