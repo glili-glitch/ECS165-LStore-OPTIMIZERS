@@ -14,7 +14,6 @@ class Query:
 
         primary_key = columns[t.key]
 
-        # Make duplicate-check + RID allocation + insert atomic
         with t.insert_lock:
             existing = t.index.locate(t.key, primary_key)
             if existing:
@@ -52,20 +51,31 @@ class Query:
         t = self.table
         records = []
 
-        rid_list = t.index.locate(search_key_index, search_key)
-        if not rid_list:
-            rid_list = []
-            with t.directory_lock:
-                for rid, entry in t.page_directory.items():
-                    if entry.is_base:
-                        rid_list.append(rid)
+        with t.directory_lock:
+            candidate_rids = [
+                rid for rid, entry in t.page_directory.items()
+                if entry.is_base
+            ]
 
-        for rid in rid_list:
+        proj = list(projected_columns_index[:t.num_columns])
+        if len(proj) < t.num_columns:
+            proj += [0] * (t.num_columns - len(proj))
+
+        for rid in candidate_rids:
             if rid not in t.page_directory:
                 continue
 
-            actual_value = t.get_column_value(rid, search_key_index, 0)
-            if actual_value != search_key:
+            columns = t.construct_full_record(rid, 0)
+            if columns is None:
+                continue
+
+            if len(columns) != t.num_columns:
+                continue
+
+            if search_key_index < 0 or search_key_index >= t.num_columns:
+                continue
+
+            if columns[search_key_index] != search_key:
                 continue
 
             if transaction:
@@ -73,15 +83,7 @@ class Query:
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
-            columns = t.construct_full_record(rid, 0)
-            if columns is None:
-                continue
-
             primary_key = t.get_primary_key(rid)
-
-            proj = list(projected_columns_index[:t.num_columns])
-            if len(proj) < t.num_columns:
-                proj += [0] * (t.num_columns - len(proj))
 
             res_cols = [
                 columns[i] if proj[i] == 1 else None
@@ -102,12 +104,25 @@ class Query:
                 if entry.is_base
             ]
 
+        proj = list(projected_columns_index[:t.num_columns])
+        if len(proj) < t.num_columns:
+            proj += [0] * (t.num_columns - len(proj))
+
         for rid in candidate_rids:
             if rid not in t.page_directory:
                 continue
 
-            value = t.get_column_value(rid, search_key_index, relative_version)
-            if value != search_key:
+            columns = t.construct_full_record(rid, relative_version)
+            if columns is None:
+                continue
+
+            if len(columns) != t.num_columns:
+                continue
+
+            if search_key_index < 0 or search_key_index >= t.num_columns:
+                continue
+
+            if columns[search_key_index] != search_key:
                 continue
 
             if transaction:
@@ -115,15 +130,7 @@ class Query:
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
-            columns = t.construct_full_record(rid, relative_version)
-            if columns is None:
-                continue
-
             primary_key = t.get_primary_key(rid)
-
-            proj = list(projected_columns_index[:t.num_columns])
-            if len(proj) < t.num_columns:
-                proj += [0] * (t.num_columns - len(proj))
 
             res_cols = [
                 columns[i] if proj[i] == 1 else None
