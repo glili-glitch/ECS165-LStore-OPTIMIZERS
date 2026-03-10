@@ -260,6 +260,53 @@ class Table:
 
         return pr_num, copied_pages, current_max_rid
 
+    # --- ADDED METHODS FOR M3 SUPPORT ---
+
+    def rollback_record(self, rid, old_indirection, old_schema):
+        """Restores metadata in Base Page after a transaction abort."""
+        with self.directory_lock:
+            entry = self.page_directory.get(rid)
+            if not entry: return
+            pr = self.page_range_directory[entry.page_range_number]
+            
+            # Reset Indirection
+            ind_loc = entry.data_locations[INDIRECTION_COLUMN]
+            ind_page = pr.base_pages[INDIRECTION_COLUMN][ind_loc.page_number]
+            ind_page.write_at_offset(old_indirection, ind_loc.offset)
+            
+            # Reset Schema
+            sch_loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
+            sch_page = pr.base_pages[SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
+            sch_page.write_at_offset(old_schema, sch_loc.offset)
+
+    def delete_record(self, rid, columns):
+        """Removes a record from the directory and index (for undoing inserts)."""
+        with self.directory_lock:
+            entry = self.page_directory.pop(rid, None)
+            if entry:
+                pr = self.page_range_directory[entry.page_range_number]
+                if rid in pr.base_records:
+                    del pr.base_records[rid]
+                    pr.num_records -= 1
+        for i, val in enumerate(columns):
+            self.index.remove_from_index(i, val, rid)
+
+    def get_indirection(self, rid):
+        with self.directory_lock:
+            entry = self.page_directory.get(rid)
+        if not entry: return 0
+        pr = self.page_range_directory[entry.page_range_number]
+        loc = entry.data_locations[INDIRECTION_COLUMN]
+        return pr.base_pages[INDIRECTION_COLUMN][loc.page_number].read(loc.offset // 8)
+
+    def get_schema(self, rid):
+        with self.directory_lock:
+            entry = self.page_directory.get(rid)
+        if not entry: return 0
+        pr = self.page_range_directory[entry.page_range_number]
+        loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
+        return pr.base_pages[SCHEMA_ENCODING_COLUMN][loc.page_number].read(loc.offset // 8)
+
 
 class PageRange:
     def __init__(self, table, page_range_number):
