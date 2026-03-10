@@ -76,6 +76,12 @@ class Transaction:
                 for i, value in enumerate(columns):
                     table_obj.index.remove_from_index(i, value, rid)
 
+            elif action == "delete":
+                _, table_obj, base_rid, old_entry = entry
+
+                with table_obj.directory_lock:
+                    table_obj.page_directory[base_rid] = old_entry
+
             elif action == "index_update":
                 _, table_obj, base_rid, col_idx, old_val, new_val = entry
 
