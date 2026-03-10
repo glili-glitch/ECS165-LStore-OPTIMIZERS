@@ -4,7 +4,6 @@ from lstore.table import Record
 
 _rid_counter = count(1)
 
-
 class Query:
     def __init__(self, table):
         self.table = table
@@ -23,7 +22,7 @@ class Query:
 
         rid = next(_rid_counter)
 
-        # Use RID-based physical placement, not primary-key-based placement
+        # Use RID-based physical placement
         page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
 
         if page_range_number not in t.page_range_directory:
@@ -33,7 +32,6 @@ class Query:
         col_list = list(columns)
         all_columns = [rid, rid, schema_encoding] + col_list
 
-        # Insert first so the record actually exists before lock bookkeeping matters
         t.add_record(
             page_range_number,
             True,
@@ -45,7 +43,7 @@ class Query:
         if transaction:
             if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((t, rid))
+            transaction.held_locks[(t, rid)] = 'X'
             transaction.rollback_log.append(("insert", t, rid, primary_key, col_list))
 
         for i, value in enumerate(columns):
@@ -73,7 +71,7 @@ class Query:
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((t, rid))
+                transaction.held_locks[(t, rid)] = 'S'
 
             columns = t.construct_full_record(rid, 0)
             if columns is None:
@@ -108,7 +106,7 @@ class Query:
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((t, rid))
+                transaction.held_locks[(t, rid)] = 'S'
 
             columns = t.construct_full_record(rid, relative_version)
             if columns is None:
@@ -134,9 +132,8 @@ class Query:
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((t, base_rid))
+            transaction.held_locks[(t, base_rid)] = 'X'
 
-        # Keep close to your original design
         self.update(primary_key, *([None] * t.num_columns), transaction=transaction)
 
         with t.directory_lock:
@@ -154,11 +151,9 @@ class Query:
         if len(columns) != t.num_columns:
             return False
 
-        # Primary key column should not be updated
         if columns[t.key] is not None:
             return False
 
-        # No-op updates should fail
         if not any(val is not None for val in columns):
             return True
 
@@ -167,7 +162,7 @@ class Query:
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
-            transaction.held_locks.add((t, base_rid))
+            transaction.held_locks[(t, base_rid)] = 'X'
 
         current_values = t.construct_full_record(base_rid, 0)
         if current_values is None:
@@ -204,7 +199,6 @@ class Query:
 
         copy_tail = None
 
-        # First update on a base record: create a full snapshot tail
         if not old_sch:
             copy_cols = [
                 p_range.base_pages[i + 3][locs[i + 3].page_number].read(locs[i + 3].offset // ent_size)
@@ -235,7 +229,6 @@ class Query:
             locs[ind_col] = table.PageCoord(ind_loc.page_number, ind_loc.offset)
             locs[sch_col] = table.PageCoord(sch_loc.page_number, sch_loc.offset)
 
-        # Update secondary indexes using current visible values
         for i, new_val in enumerate(columns):
             if new_val is not None:
                 old_val = current_values[i]
@@ -265,7 +258,7 @@ class Query:
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((t, rid))
+                transaction.held_locks[(t, rid)] = 'S'
 
             value = t.get_column_value(rid, aggregate_column_index, 0)
             if value is not None:
@@ -291,7 +284,7 @@ class Query:
             if transaction:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
-                transaction.held_locks.add((t, rid))
+                transaction.held_locks[(t, rid)] = 'S'
 
             value = t.get_column_value(rid, aggregate_column_index, relative_version)
             if value is not None:
