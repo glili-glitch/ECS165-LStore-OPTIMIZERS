@@ -269,15 +269,31 @@ class Table:
             if not entry: return
             pr = self.page_range_directory[entry.page_range_number]
             
-            # Reset Indirection
+            # Reset Indirection using your Page.write(value, offset)
             ind_loc = entry.data_locations[INDIRECTION_COLUMN]
             ind_page = pr.base_pages[INDIRECTION_COLUMN][ind_loc.page_number]
-            ind_page.write_at_offset(old_indirection, ind_loc.offset)
+            ind_page.write(old_indirection, offset=ind_loc.offset)
             
-            # Reset Schema
+            # Reset Schema Encoding using your Page.write(value, offset)
             sch_loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
             sch_page = pr.base_pages[SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
-            sch_page.write_at_offset(old_schema, sch_loc.offset)
+            sch_page.write(old_schema, offset=sch_loc.offset)
+
+    def set_indirection(self, rid, val):
+        """Updates the indirection pointer to a new tail RID."""
+        with self.directory_lock:
+            e = self.page_directory.get(rid)
+            pr = self.page_range_directory[e.page_range_number]
+            l = e.data_locations[INDIRECTION_COLUMN]
+            pr.base_pages[INDIRECTION_COLUMN][l.page_number].write(val, offset=l.offset)
+
+    def set_schema(self, rid, val):
+        """Updates the schema encoding bitmask."""
+        with self.directory_lock:
+            e = self.page_directory.get(rid)
+            pr = self.page_range_directory[e.page_range_number]
+            l = e.data_locations[SCHEMA_ENCODING_COLUMN]
+            pr.base_pages[SCHEMA_ENCODING_COLUMN][l.page_number].write(val, offset=l.offset)
 
     def delete_record(self, rid, columns):
         """Removes a record from the directory and index (for undoing inserts)."""
