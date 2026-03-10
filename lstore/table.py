@@ -125,51 +125,55 @@ class Table:
 
             return pages[col_idx][loc.page_number].read(loc.offset // 8)
 
-        # Start with base values
+        # start from base record
         result = [_read(base_entry, i + 3) for i in range(self.num_columns)]
 
-        indirection = _read(base_entry, INDIRECTION_COLUMN)
-        if indirection == 0 or indirection == rid or indirection is None:
+        latest_tail_rid = _read(base_entry, INDIRECTION_COLUMN)
+        if latest_tail_rid in (None, 0, rid):
             return result
 
-        # Follow tail chain safely
-        chain = []
+        # collect tails from latest -> oldest
+        tail_chain = []
         visited = set()
-        curr_rid = indirection
+        curr_rid = latest_tail_rid
 
-        while curr_rid != 0 and curr_rid != rid and curr_rid is not None and curr_rid not in visited:
+        while curr_rid not in (None, 0, rid) and curr_rid not in visited:
             visited.add(curr_rid)
 
             with self.directory_lock:
                 tail_entry = self.page_directory.get(curr_rid)
 
-            if not tail_entry:
+            if tail_entry is None or tail_entry.is_base:
                 break
 
-            chain.append(tail_entry)
+            tail_chain.append(tail_entry)
 
             next_rid = _read(tail_entry, INDIRECTION_COLUMN)
-
-            # protect against self-loop
             if next_rid == curr_rid:
                 break
-
             curr_rid = next_rid
 
-        # relative_version = 0 means latest
-        # relative_version = -1 means one version older, 
-        if relative_version < 0:
-            steps_back = abs(relative_version)
-            if steps_back >= len(chain):
-                return [_read(base_entry, i + 3) for i in range(self.num_columns)]
-            chain = chain[steps_back:]
+        # version semantics:
+        #  0  -> latest
+        # -1  -> one version older
+        # -2  -> two versions older
+        if relative_version > 0:
+            return None
 
-        # Apply from oldest to newest
-        for tail_entry in reversed(chain):
+        skip = abs(relative_version)
+
+        # if asking older than available history, fall back to oldest reachable version
+        if skip > len(tail_chain):
+            skip = len(tail_chain)
+
+        usable_chain = tail_chain[skip:]   # still latest->oldest among remaining tails
+
+        # apply remaining tails oldest -> newest
+        for tail_entry in reversed(usable_chain):
             for i in range(self.num_columns):
-                value = _read(tail_entry, i + 3)
-                if value is not None:
-                    result[i] = value
+                val = _read(tail_entry, i + 3)
+                if val is not None:
+                    result[i] = val
 
         return result
 
