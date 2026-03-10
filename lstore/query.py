@@ -126,6 +126,9 @@ class Query:
             return False
 
         base_rid = rids[0]
+        current_values = t.construct_full_record(base_rid, 0)
+        if current_values is None:
+           return False
         if transaction:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
                 return False
@@ -177,7 +180,7 @@ class Query:
         # INDEX UPDATE LOGIC: Use Version 1 to find the real old value
         for i, new_val in enumerate(columns):
             if new_val is not None:
-                old_val = t.get_column_value(base_rid, i, 0) 
+                old_val = current_values[i] 
                 if old_val is not None and new_val != old_val:
                     if transaction: transaction.rollback_log.append(("index_update", t, base_rid, i, old_val, new_val))
                     t.index.remove_from_index(i, old_val, base_rid)
