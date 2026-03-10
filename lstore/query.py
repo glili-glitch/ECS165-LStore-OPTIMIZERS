@@ -1,8 +1,8 @@
-from itertools import count
+
 from lstore import table, page
 from lstore.table import Record
 
-_rid_counter = count(1)
+
 
 class Query:
     def __init__(self, table):
@@ -20,7 +20,7 @@ class Query:
         if existing:
             return False
 
-        rid = next(_rid_counter)
+        rid =t.allocate_rid()
 
         
         page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
@@ -219,7 +219,7 @@ class Query:
                 p_range.base_pages[i + 3][locs[i + 3].page_number].read(locs[i + 3].offset // ent_size)
                 for i in range(n_cols)
             ]
-            copy_tail = Record(next(_rid_counter), primary_key, copy_cols)
+            copy_tail = Record(t.allocate_rid(), primary_key, copy_cols)
             t.add_record(
                 base_entry.page_range_number,
                 False,
@@ -228,7 +228,7 @@ class Query:
             )
 
         prev_rid = copy_tail.rid if copy_tail else old_ind
-        tail_rec = Record(next(_rid_counter), primary_key, list(columns))
+        tail_rec = Record(t.allocate_rid(), primary_key, list(columns))
 
         t.add_record(
             base_entry.page_range_number,
