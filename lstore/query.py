@@ -262,7 +262,7 @@ class Query:
             record=tail_rec
         )
         if transaction:
-            transaction.rollback_log.append(("tail_insert", t, copy_tail.rid))
+            transaction.rollback_log.append(("tail_insert", t, tail_rec.rid))
 
 
         ind_page.write(tail_rec.rid, ind_loc.offset)
