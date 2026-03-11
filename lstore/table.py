@@ -123,6 +123,9 @@ class Table:
             return None
 
         def _read(entry, col_idx):
+            if col_idx < 0 or col_idx >= len(entry.data_locations):
+                return None
+
             loc = entry.data_locations[col_idx]
             if loc is None:
                 return None
@@ -135,17 +138,19 @@ class Table:
 
             if col_idx >= len(pages):
                 return None
-            if loc.page_number >= len(pages[col_idx]):
+            if loc.page_number < 0 or loc.page_number >= len(pages[col_idx]):
                 return None
 
             return pages[col_idx][loc.page_number].read(loc.offset // 8)
 
-        base_values = [_read(base_entry, i + 3) for i in range(self.num_columns)]
+        base_values = []
+        for i in range(self.num_columns):
+            base_values.append(_read(base_entry, i + 3))
 
         latest_tail_rid = _read(base_entry, INDIRECTION_COLUMN)
 
         if latest_tail_rid in (None, 0, rid):
-            return base_values
+            return base_values[:]
 
         tail_chain = []
         visited = set()
@@ -165,27 +170,32 @@ class Table:
             next_rid = _read(tail_entry, INDIRECTION_COLUMN)
             if next_rid == curr_rid:
                 break
+
             curr_rid = next_rid
 
-        total_tails = len(tail_chain)
-
-        if relative_version == 0:
-            apply_count = total_tails
-        else:
-            apply_count = total_tails + relative_version
-            if apply_count < 0:
-                apply_count = 0
-
+        versions = [base_values[:]]
         current = base_values[:]
-        oldest_to_newest = list(reversed(tail_chain))
 
-        for tail_entry in oldest_to_newest[:apply_count]:
+        for tail_entry in reversed(tail_chain):
+            changed = False
+
             for i in range(self.num_columns):
                 val = _read(tail_entry, i + 3)
-                if val is not None:
+                if val is not None and current[i] != val:
                     current[i] = val
+                    changed = True
 
-        return current
+            if changed:
+                versions.append(current[:])
+
+        target_index = len(versions) - 1 + relative_version
+
+        if target_index < 0:
+            target_index = 0
+        if target_index >= len(versions):
+            target_index = len(versions) - 1
+
+        return versions[target_index][:]
 
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
@@ -286,6 +296,8 @@ class Table:
     def set_indirection(self, rid, val):
         with self.directory_lock:
             e = self.page_directory.get(rid)
+            if not e:
+                return
             pr = self.page_range_directory[e.page_range_number]
             l = e.data_locations[INDIRECTION_COLUMN]
             pr.base_pages[INDIRECTION_COLUMN][l.page_number].write(val, offset=l.offset)
@@ -293,6 +305,8 @@ class Table:
     def set_schema(self, rid, val):
         with self.directory_lock:
             e = self.page_directory.get(rid)
+            if not e:
+                return
             pr = self.page_range_directory[e.page_range_number]
             l = e.data_locations[SCHEMA_ENCODING_COLUMN]
             pr.base_pages[SCHEMA_ENCODING_COLUMN][l.page_number].write(val, offset=l.offset)
