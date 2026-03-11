@@ -38,7 +38,8 @@ class Table:
         self.num_columns = num_columns
         self.page_directory = {}
         self.page_range_directory = {}
-        self._next_rid = 1
+        self._next_base_rid = 1
+        self._next_tail_rid = 10_000_000_000
         self._rid_lock = threading.Lock()
         self.insert_lock = threading.Lock()
         self.record_lock = threading.Lock()
@@ -49,10 +50,16 @@ class Table:
         self.lock_manager = None
         self.directory_lock = threading.Lock()
 
-    def allocate_rid(self):
+    def allocate_base_rid(self):
         with self._rid_lock:
-            rid = self._next_rid
-            self._next_rid += 1
+            rid = self._next_base_rid()
+            self._next_base_rid += 1
+            return rid
+        
+    def allocate_tail_rid(self):
+        with self._rid_lock:
+            rid = self._next_tail_rid
+            self._next_tail_rid += 1
             return rid
 
     def _read_page_value(self, entry, col_idx):

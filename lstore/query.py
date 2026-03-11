@@ -19,7 +19,7 @@ class Query:
             if existing:
                 return False
 
-            rid = t.allocate_rid()
+            rid = t.allocate_base_rid()
             page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
 
             if page_range_number not in t.page_range_directory:
@@ -239,7 +239,7 @@ class Query:
 
         if old_sch == 0:
             copy_cols = list(current_values)
-            copy_tail = Record(t.allocate_rid(), primary_key, copy_cols)
+            copy_tail = Record(t.allocate_tail_rid(), primary_key, copy_cols)
 
             t.add_record(
                 base_entry.page_range_number,
@@ -253,7 +253,7 @@ class Query:
 
         prev_rid = base_rid if copy_tail else old_ind
         tail_cols = list(columns)
-        tail_rec = Record(t.allocate_rid(), primary_key, tail_cols)
+        tail_rec = Record(t.allocate_tail_rid(), primary_key, tail_cols)
 
         t.add_record(
             base_entry.page_range_number,
