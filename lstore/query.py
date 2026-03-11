@@ -122,7 +122,7 @@ class Query:
             if columns[search_key_index] != search_key:
                 continue
 
-            primary_key = t.get_primary_key(rid)
+            primary_key = columns[t.key]
 
             res_cols = [
                 columns[i] if proj[i] == 1 else None

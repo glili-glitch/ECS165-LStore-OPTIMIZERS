@@ -166,7 +166,7 @@ class Table:
 
         latest_tail_rid = self._read_page_value(base_entry, INDIRECTION_COLUMN)
         if latest_tail_rid in (None, 0, rid):
-            return base_values[:] if relative_version == 0 else None
+            return base_values[:] 
 
         tail_chain = []
         visited = set()
@@ -211,14 +211,19 @@ class Table:
                     changed = True
 
             if changed:
-                versions.append(new_version[:])
+                if new_version != versions[-1]:
+                   versions.append(new_version[:])
+            
                 current = new_version[:]
 
         if relative_version == 0:
             return versions[-1][:]
 
         idx = len(versions) - 1 + relative_version
-        if idx < 0 or idx >= len(versions):
+        if idx < 0:
+           idx = 0
+
+        if idx >= len(versions):
             return None
 
         return versions[idx][:]
