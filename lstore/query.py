@@ -30,7 +30,7 @@ class Query:
             all_columns = [rid, rid, schema_encoding] + col_list
 
             if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'X'):
                     return False
                 transaction.held_locks[(t, rid)] = 'X'
 
@@ -70,7 +70,7 @@ class Query:
                 continue
 
             if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -111,7 +111,7 @@ class Query:
 
         for rid in candidate_rids:
             if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -145,7 +145,7 @@ class Query:
             return False
 
         if transaction and t.lock_manager is not None:
-            if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+            if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
 
@@ -154,7 +154,6 @@ class Query:
             return False
 
         if transaction:
-           
             transaction.rollback_log.append(
                 ("delete", t, base_rid, list(current_values))
             )
@@ -185,7 +184,7 @@ class Query:
         base_rid = rids[0]
 
         if transaction and t.lock_manager is not None:
-            if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
+            if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
 
@@ -300,7 +299,7 @@ class Query:
                 continue
 
             if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -327,7 +326,7 @@ class Query:
                 continue
 
             if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
