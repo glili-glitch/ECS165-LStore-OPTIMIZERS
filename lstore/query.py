@@ -82,7 +82,12 @@ class Query:
                 continue
 
             primary_key = t.get_primary_key(rid)
-            res_cols = [columns[i] if proj[i] == 1 else None for i in range(t.num_columns)]
+
+            res_cols = [
+                columns[i] if proj[i] == 1 else None
+                for i in range(t.num_columns)
+            ]
+
             records.append(Record(rid, primary_key, res_cols))
 
         return records
@@ -118,7 +123,12 @@ class Query:
                 continue
 
             primary_key = columns[t.key]
-            res_cols = [columns[i] if proj[i] == 1 else None for i in range(t.num_columns)]
+
+            res_cols = [
+                columns[i] if proj[i] == 1 else None
+                for i in range(t.num_columns)
+            ]
+
             records.append(Record(rid, primary_key, res_cols))
 
         return records
@@ -144,7 +154,11 @@ class Query:
             return False
 
         if transaction:
-            transaction.rollback_log.append(("delete", t, base_rid, list(current_values)))
+            pr = t.page_range_directory.get(base_entry.page_range_number)
+            base_record = pr.get_record(True, base_rid) if pr is not None else None
+            transaction.rollback_log.append(
+                ("delete", t, base_rid, list(current_values), base_entry, base_record)
+            )
 
         for i, value in enumerate(current_values):
             if value is not None:
@@ -204,11 +218,8 @@ class Query:
         ind_page = p_range.base_pages[ind_col][ind_loc.page_number]
         sch_page = p_range.base_pages[sch_col][sch_loc.page_number]
 
-        ind_slot = ind_loc.offset // ent_size
-        sch_slot = sch_loc.offset // ent_size
-
-        old_ind = ind_page.read(ind_slot)
-        old_sch = sch_page.read(sch_slot)
+        old_ind = ind_page.read(ind_loc.offset // ent_size)
+        old_sch = sch_page.read(sch_loc.offset // ent_size)
 
         if old_ind is None:
             old_ind = base_rid
@@ -258,8 +269,8 @@ class Query:
         if transaction:
             transaction.rollback_log.append(("tail_insert", t, tail_rec.rid))
 
-        ind_page.write(tail_rec.rid, ind_slot)
-        sch_page.write(new_base_sch, sch_slot)
+        ind_page.write(tail_rec.rid, ind_loc.offset)
+        sch_page.write(new_base_sch, sch_loc.offset)
 
         for i, new_val in enumerate(columns):
             if new_val is not None:
