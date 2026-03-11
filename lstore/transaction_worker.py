@@ -1,6 +1,4 @@
 import threading
-import time
-import random
 
 
 class TransactionWorker:
@@ -25,15 +23,7 @@ class TransactionWorker:
         self.stats = []
 
         for transaction in self.transactions:
-            success = False
-            delay = 0.001
-
-            while not success:
-                success = transaction.run()
-                if not success:
-                    time.sleep(delay + random.uniform(0, delay))
-                    delay = min(delay * 2, 0.05)
-
-            self.stats.append(True)
+            success = transaction.run()
+            self.stats.append(success)
 
         self.result = sum(1 for x in self.stats if x)
