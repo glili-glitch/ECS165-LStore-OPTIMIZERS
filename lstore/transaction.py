@@ -12,6 +12,9 @@ class Transaction:
         self.queries.append((query, table_obj, args))
 
     def run(self):
+        self.rollback_log = []
+        self.held_locks = {}
+        self.transaction_id = uuid.uuid4()
         try:
             for query, table_obj, args in self.queries:
                 result = query(*args, transaction=self)
