@@ -178,7 +178,7 @@ class Table:
             usable_chain = tail_chain[skip:]
 
 
-        for tail_entry in reversed(tail_chain):
+        for tail_entry in reversed(usable_chain):
             for i in range(self.num_columns):
                 val = _read(tail_entry, i + 3)
                 if val is not None:
