@@ -3,68 +3,74 @@ import threading
 
 class LockManager:
     def __init__(self):
-        # (table_id, rid) -> {'type': 'S' or 'X', 'holders': set(transaction_ids)}
+        # (table_id, rid) -> {'readers': set(txn_ids), 'writer': txn_id or None}
         self.locks = {}
-        self.lock_mutex = threading.Lock()
+        self.mutex = threading.Lock()
 
     def acquire_lock(self, table_obj, rid, transaction_id, lock_type):
-        """
-        No-Wait 2PL:
-        - grant immediately if compatible
-        - otherwise return False immediately
-        """
-        lock_key = (id(table_obj), rid)
+        key = (id(table_obj), rid)
 
-        with self.lock_mutex:
-            if lock_key not in self.locks:
-                self.locks[lock_key] = {
-                    'type': lock_type,
-                    'holders': {transaction_id}
+        with self.mutex:
+            if key not in self.locks:
+                self.locks[key] = {
+                    "readers": set(),
+                    "writer": None
                 }
-                return True
 
-            lock = self.locks[lock_key]
+            lock = self.locks[key]
+            readers = lock["readers"]
+            writer = lock["writer"]
 
-            # transaction already holds a lock
-            if transaction_id in lock['holders']:
-                # already has X, or is requesting S while already holding S/X
-                if lock['type'] == 'X' or lock_type == 'S':
+            if lock_type == 'S':
+                # already holds X or S
+                if writer == transaction_id:
+                    return True
+                if transaction_id in readers:
                     return True
 
-                # upgrade S -> X only if this txn is sole holder
-                if lock['type'] == 'S' and lock_type == 'X':
-                    if len(lock['holders']) == 1:
-                        lock['type'] = 'X'
+                # no writer -> grant shared
+                if writer is None:
+                    readers.add(transaction_id)
+                    return True
+
+                return False
+
+            elif lock_type == 'X':
+                # already holds X
+                if writer == transaction_id:
+                    return True
+
+                # upgrade S -> X if this txn is the only reader
+                if transaction_id in readers:
+                    if len(readers) == 1 and writer is None:
+                        readers.remove(transaction_id)
+                        lock["writer"] = transaction_id
                         return True
                     return False
 
-            # another txn holds X, or requester wants X while others hold S
-            if lock['type'] == 'X':
-                return False
-
-            if lock['type'] == 'S':
-                if lock_type == 'S':
-                    lock['holders'].add(transaction_id)
+                # fresh X request: only allowed if no readers and no writer
+                if writer is None and len(readers) == 0:
+                    lock["writer"] = transaction_id
                     return True
+
                 return False
 
             return False
 
     def release_locks(self, table_obj, transaction_id, rids):
-        """
-        Release all locks held by transaction_id on the given RIDs for one table.
-        """
-        with self.lock_mutex:
+        with self.mutex:
             for rid in rids:
-                lock_key = (id(table_obj), rid)
-
-                if lock_key not in self.locks:
+                key = (id(table_obj), rid)
+                if key not in self.locks:
                     continue
 
-                lock = self.locks[lock_key]
+                lock = self.locks[key]
 
-                if transaction_id in lock['holders']:
-                    lock['holders'].remove(transaction_id)
+                if lock["writer"] == transaction_id:
+                    lock["writer"] = None
 
-                    if not lock['holders']:
-                        del self.locks[lock_key]
+                if transaction_id in lock["readers"]:
+                    lock["readers"].remove(transaction_id)
+
+                if lock["writer"] is None and len(lock["readers"]) == 0:
+                    del self.locks[key]
