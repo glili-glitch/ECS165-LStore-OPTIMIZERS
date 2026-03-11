@@ -167,31 +167,25 @@ class Table:
                 break
             curr_rid = next_rid
 
-        versions = [base_values[:]]
-        current = base_values[:]
+        total_tails = len(tail_chain)
 
-        skip = abs(relative_version)
-
-        if skip >= len(tail_chain):
-            usable_chain = []
+        if relative_version == 0:
+            apply_count = total_tails
         else:
-            usable_chain = tail_chain[skip:]
+            apply_count = total_tails + relative_version
+            if apply_count < 0:
+                apply_count = 0
 
+        current = base_values[:]
+        oldest_to_newest = list(reversed(tail_chain))
 
-        for tail_entry in reversed(usable_chain):
+        for tail_entry in oldest_to_newest[:apply_count]:
             for i in range(self.num_columns):
                 val = _read(tail_entry, i + 3)
                 if val is not None:
                     current[i] = val
-            versions.append(current[:])
 
-        latest_index = len(versions) - 1
-        target_index = latest_index + relative_version
-
-        if target_index < 0:
-            target_index = 0
-
-        return versions[target_index]
+        return current
 
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
