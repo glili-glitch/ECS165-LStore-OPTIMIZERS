@@ -1,6 +1,6 @@
 import threading
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 from lstore.index import Index
 from lstore.page import Page
 
@@ -9,12 +9,10 @@ INDIRECTION_COLUMN = 1
 SCHEMA_ENCODING_COLUMN = 2
 NUM_RECORDS_PER_RANGE = 1024
 
-
 @dataclass
 class PageCoord:
     page_number: int
     offset: int
-
 
 @dataclass
 class PageDirectoryEntry:
@@ -23,34 +21,27 @@ class PageDirectoryEntry:
     data_locations: List[PageCoord]
     is_deleted: bool = False
 
-
 class Record:
     def __init__(self, rid, key, columns):
         self.rid = rid
         self.key = key
         self.columns = columns
 
-
 class Table:
     def __init__(self, name, num_columns, key):
         self.name = name
         self.key = key
         self.num_columns = num_columns
-
         self.page_directory = {}
         self.page_range_directory = {}
-
         self._next_rid = 1
         self._rid_lock = threading.Lock()
         self.insert_lock = threading.Lock()
         self.record_lock = threading.Lock()
-
         self.index = Index(self)
-
         self.merge_threshold = 1000
         self._update_count = 0
         self._merge_lock = threading.Lock()
-
         self.lock_manager = None
         self.directory_lock = threading.Lock()
 
@@ -65,42 +56,32 @@ class Table:
             return None
         if col_idx < 0 or col_idx >= len(entry.data_locations):
             return None
-
         loc = entry.data_locations[col_idx]
         if loc is None:
             return None
-
         pr = self.page_range_directory.get(entry.page_range_number)
         if pr is None:
             return None
-
         pages = pr.base_pages if entry.is_base else pr.tail_pages
-
         if col_idx >= len(pages):
             return None
         if loc.page_number < 0 or loc.page_number >= len(pages[col_idx]):
             return None
-
         return pages[col_idx][loc.page_number].read(loc.offset // 8)
 
     def get_primary_key(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-
         if not entry or entry.is_deleted:
             return None
-
         pr = self.page_range_directory.get(entry.page_range_number)
         if not pr:
             return None
-
         record = pr.get_record(entry.is_base, rid)
         if not record or record.columns is None:
             return None
-
         if self.key < 0 or self.key >= len(record.columns):
             return None
-
         return record.columns[self.key]
 
     def add_page_range(self, page_range_number):
@@ -114,25 +95,19 @@ class Table:
         with self.record_lock:
             with self.directory_lock:
                 pr = self.page_range_directory[page_range_number]
-
             pages = pr.base_pages if is_base else pr.tail_pages
             new_locs = [None] * (self.num_columns + 3)
-
             for i in range(self.num_columns + 3):
                 if i >= len(all_columns):
                     break
-
                 if all_columns[i] is None:
                     continue
-
                 last_page = pages[i][-1]
                 if not last_page.has_capacity():
                     pr.add_page(is_base, i)
                     last_page = pages[i][-1]
-
                 new_locs[i] = PageCoord(len(pages[i]) - 1, last_page.current_offset)
                 last_page.write(all_columns[i])
-
             with self.directory_lock:
                 self.page_directory[record.rid] = PageDirectoryEntry(
                     page_range_number=page_range_number,
@@ -140,126 +115,87 @@ class Table:
                     data_locations=new_locs,
                     is_deleted=False
                 )
-
             pr.add_record(is_base, record)
 
     def delete_tail_record(self, rid):
         with self.directory_lock:
             entry = self.page_directory.pop(rid, None)
-
         if not entry:
             return
-
         pr = self.page_range_directory.get(entry.page_range_number)
         if pr is None:
             return
-
         if not entry.is_base and rid in pr.tail_records:
             del pr.tail_records[rid]
 
     def construct_full_record(self, rid, relative_version=0):
-        """
-        Construct a record with the specified version
-        relative_version: 0 = current, -1 = one version back, -2 = two versions back, etc.
-        """
         with self.directory_lock:
             base_entry = self.page_directory.get(rid)
-
         if not base_entry or not base_entry.is_base or base_entry.is_deleted:
             return None
-
         if relative_version > 0:
             return None
-
         pr = self.page_range_directory.get(base_entry.page_range_number)
         if pr is None:
             return None
-
-        # Get base record values
         base_record = pr.get_record(True, rid)
         if base_record is None or base_record.columns is None:
             return None
-
         if len(base_record.columns) != self.num_columns:
             return None
-
         base_values = list(base_record.columns)
-
-        # Get the latest tail record RID from indirection column
         latest_tail_rid = self._read_page_value(base_entry, INDIRECTION_COLUMN)
-
-        # If no updates have been made, return base values
         if latest_tail_rid in (None, 0, rid):
-            return base_values[:]
-
-        # Build the tail chain (from most recent to oldest)
+            if relative_version == 0:
+                return base_values[:]
+            else:
+                return None
         tail_chain = []
         visited = set()
         curr_rid = latest_tail_rid
-
         while curr_rid not in (None, 0, rid) and curr_rid not in visited:
             visited.add(curr_rid)
-
             with self.directory_lock:
                 tail_entry = self.page_directory.get(curr_rid)
-
             if tail_entry is None or tail_entry.is_base or tail_entry.is_deleted:
                 break
-
             tail_record = pr.get_record(False, curr_rid)
             if tail_record is None or tail_record.columns is None:
                 break
-
             if len(tail_record.columns) != self.num_columns:
                 break
-
             tail_chain.append((tail_entry, tail_record))
-
-            # Get next in chain (older version)
             next_rid = self._read_page_value(tail_entry, INDIRECTION_COLUMN)
             if next_rid == curr_rid:
                 break
-
             curr_rid = next_rid
-
-        # If no tail records found, return base values
         if not tail_chain:
-            return base_values[:]
-
-        # Build version history from oldest to newest
+            if relative_version == 0:
+                return base_values[:]
+            else:
+                return None
         versions = [base_values[:]]
         current = base_values[:]
-
-        # Traverse from oldest to newest (reverse the chain)
         for tail_entry, tail_record in reversed(tail_chain):
-            # Create a new version by applying updates from this tail record
             new_version = current[:]
             changed = False
-
             for i in range(self.num_columns):
                 val = tail_record.columns[i]
-                if val is not None and new_version[i] != val:
+                if val is not None:
                     new_version[i] = val
                     changed = True
-
             if changed:
                 versions.append(new_version[:])
                 current = new_version[:]
-
-        # Calculate target index based on relative_version
-        # versions[0] = oldest (base), versions[-1] = newest (current)
         if relative_version == 0:
-            return versions[-1][:]  # Return newest version
+            return versions[-1][:]
         elif relative_version < 0:
-            # -1 means one version back from newest
-            target_index = len(versions) - 1 + relative_version
-            if target_index < 0:
-                return None  # Requested version doesn't exist
-            if target_index >= len(versions):
+            requested_index = len(versions) - 1 + relative_version
+            if requested_index < 0 or requested_index >= len(versions):
                 return None
-            return versions[target_index][:]
+            return versions[requested_index][:]
         else:
-            return None  # Invalid relative_version
+            return None
 
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
@@ -295,17 +231,14 @@ class Table:
         pr = self.page_range_directory.get(pr_num)
         if pr is None or not pr.tail_records:
             return None
-
         with self.directory_lock:
             current_max_rid = max(pr.tail_records.keys())
             if current_max_rid <= pr.tps:
                 return None
-
             base_rids = [
                 rid for rid, entry in self.page_directory.items()
                 if entry.is_base and entry.page_range_number == pr_num and not entry.is_deleted
             ]
-
         copied_pages = []
         for col in range(self.num_columns + 3):
             copied_col = []
@@ -317,31 +250,25 @@ class Table:
                 new_page.data = bytearray(original_page.data)
                 copied_col.append(new_page)
             copied_pages.append(copied_col)
-
         for base_rid in base_rids:
             latest_values = self.construct_full_record(base_rid, 0)
             if latest_values is None:
                 continue
-
             with self.directory_lock:
                 entry = self.page_directory.get(base_rid)
                 if entry is None or entry.is_deleted:
                     continue
                 locations = entry.data_locations
-
             for col in range(self.num_columns):
                 loc = locations[col + 3]
                 if loc is None:
                     continue
-
                 value = latest_values[col]
                 if value is None:
                     continue
-
                 copied_pages[col + 3][loc.page_number].data[
                     loc.offset:loc.offset + 8
                 ] = int(value).to_bytes(8, byteorder="little", signed=True)
-
         return pr_num, copied_pages, current_max_rid
 
     def rollback_record(self, rid, old_indirection, old_schema):
@@ -350,11 +277,9 @@ class Table:
             if not entry or entry.is_deleted:
                 return
             pr = self.page_range_directory[entry.page_range_number]
-
             ind_loc = entry.data_locations[INDIRECTION_COLUMN]
             ind_page = pr.base_pages[INDIRECTION_COLUMN][ind_loc.page_number]
             ind_page.write(old_indirection, offset=ind_loc.offset)
-
             sch_loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
             sch_page = pr.base_pages[SCHEMA_ENCODING_COLUMN][sch_loc.page_number]
             sch_page.write(old_schema, offset=sch_loc.offset)
@@ -387,7 +312,6 @@ class Table:
                     pr.num_records -= 1
                 elif rid in pr.tail_records:
                     del pr.tail_records[rid]
-
         for i, val in enumerate(columns):
             self.index.remove_from_index(i, val, rid)
 
@@ -409,18 +333,14 @@ class Table:
         loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]
         return pr.base_pages[SCHEMA_ENCODING_COLUMN][loc.page_number].read(loc.offset // 8)
 
-
 class PageRange:
     def __init__(self, table, page_range_number):
         self.table = table
         self.page_range_number = page_range_number
-
         self.base_pages = [[Page()] for _ in range(table.num_columns + 3)]
         self.tail_pages = [[Page()] for _ in range(table.num_columns + 3)]
-
         self.base_records = {}
         self.tail_records = {}
-
         self.num_records = 0
         self.tps = 0
 
