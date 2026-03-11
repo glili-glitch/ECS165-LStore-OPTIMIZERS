@@ -8,7 +8,7 @@ class Index:
         self.table = table
         self.lock = threading.Lock()
         # Key column should be indexed by default (commonly column 0).
-        # If your table defines key column differently, change 0 to that column index.
+        
         self.create_index(table.key)
         pass
 
@@ -97,6 +97,8 @@ class Index:
                     continue
                 # Get the latest value for this column
                 columns = self.table.construct_full_record(rid)
+                if columns is None or len(columns) <= column_number:
+                    continue
                 value = columns[column_number]
                 if value is not None:
                     if value in idx:

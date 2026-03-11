@@ -58,6 +58,8 @@ class Table:
             rid = self._next_rid
             self._next_rid += 1
             return rid
+        
+    
 
     def _read_page_value(self, entry, col_idx):
         if entry is None:
@@ -140,6 +142,19 @@ class Table:
                 )
 
             pr.add_record(is_base, record)
+            
+    def delete_tail_record(self, rid):
+        with self.directory_lock:
+             entry = self.page_directory.pop(rid, None)
+        if not entry:
+            return
+
+        pr = self.page_range_directory.get(entry.page_range_number)
+        if pr is None:
+            return
+
+        if not entry.is_base and rid in pr.tail_records:
+            del pr.tail_records[rid]
 
     def construct_full_record(self, rid, relative_version=0):
         with self.directory_lock:
