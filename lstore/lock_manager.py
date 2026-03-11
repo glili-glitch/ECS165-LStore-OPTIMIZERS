@@ -23,25 +23,27 @@ class LockManager:
 
             lock = self.locks[rid]
 
-            # Transaction already holds this lock
+            
+
+        # CASE 1: Transaction already holds a lock [cite: 39, 40]
             if transaction_id in lock['holders']:
-                # already has X, or is asking again for S
                 if lock['type'] == 'X' or lock_type == 'S':
                     return True
+                # Upgrade S -> X 
+                if len(lock['holders']) == 1:
+                    lock['type'] = 'X'
+                    return True
+                return False # No-Wait: others hold S, so abort 
 
-                # upgrade S -> X only if this transaction is the sole holder
-                if lock['type'] == 'S' and lock_type == 'X':
-                    if len(lock['holders']) == 1:
-                        lock['type'] = 'X'
-                        return True
-                    return False
-
-            # compatible shared lock
+            # CASE 2: New transaction requesting a lock 
+            # No-Wait: If record is X-locked, or new request is X while others have S
+            if lock['type'] == 'X' or lock_type == 'X':
+                return False 
+            
             if lock['type'] == 'S' and lock_type == 'S':
                 lock['holders'].add(transaction_id)
                 return True
 
-            # all other cases conflict under no-wait
             return False
 
     def release_locks(self, transaction_id, rids):

@@ -123,7 +123,8 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
-                    return False
+                  transaction.status = "ABORTED"
+                  return []
                 transaction.held_locks[(t, rid)] = 'S'
 
             if rid not in t.page_directory:
@@ -174,16 +175,13 @@ class Query:
             if value is not None:
                 t.index.remove_from_index(i, value, base_rid)
 
-        # Logical delete: keep metadata for rollback/version safety.
-        # Assumes your page directory entry supports a deleted flag.
-        # If your table uses a different field name, change it there too.
+        
         if hasattr(base_entry, "is_deleted"):
             base_entry.is_deleted = True
         elif hasattr(base_entry, "deleted"):
             base_entry.deleted = True
         else:
-            # Fallback: do not physically remove record metadata.
-            # Returning True here is safer than popping page_directory.
+            
             pass
 
         return True

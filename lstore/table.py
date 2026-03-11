@@ -228,6 +228,11 @@ class Table:
             if changed:
                 versions.append(current[:])
 
+
+                # Safety check before indexing
+                if not versions:
+                   return None
+
         target_index = len(versions) - 1 + relative_version
 
         if target_index < 0:
