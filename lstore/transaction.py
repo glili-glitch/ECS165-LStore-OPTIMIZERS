@@ -18,12 +18,10 @@ class Transaction:
                 if result is False:
                     return self.abort()
             return self.commit()
-        except Exception as e:
-            print("Transaction error:", e)
+        except Exception:
             return self.abort()
 
     def abort(self):
-        # Reverse order matters
         for entry in reversed(self.rollback_log):
             action = entry[0]
 
@@ -45,6 +43,24 @@ class Transaction:
             elif action == "insert":
                 _, table_obj, rid, columns = entry
                 table_obj.delete_record(rid, columns)
+
+            elif action == "delete":
+                _, table_obj, rid, old_values, base_entry = entry
+
+                # restore page directory entry if needed
+                if rid not in table_obj.page_directory:
+                    table_obj.page_directory[rid] = base_entry
+
+                restored_entry = table_obj.page_directory.get(rid)
+                if restored_entry is not None:
+                    if hasattr(restored_entry, "is_deleted"):
+                        restored_entry.is_deleted = False
+                    elif hasattr(restored_entry, "deleted"):
+                        restored_entry.deleted = False
+
+                for i, value in enumerate(old_values):
+                    if value is not None:
+                        table_obj.index.add_to_index(i, value, rid)
 
         self.rollback_log.clear()
         self._release_all_locks()

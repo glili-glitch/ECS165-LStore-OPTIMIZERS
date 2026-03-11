@@ -33,7 +33,6 @@ class Query:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
                     return False
                 transaction.held_locks[(t, rid)] = 'X'
-                transaction.rollback_log.append(("insert", t, rid, col_list))
 
             t.add_record(
                 page_range_number,
@@ -44,6 +43,9 @@ class Query:
 
             for i, value in enumerate(columns):
                 t.index.add_to_index(i, value, rid)
+
+            if transaction:
+                transaction.rollback_log.append(("insert", t, rid, col_list))
 
         return True
 
@@ -99,18 +101,24 @@ class Query:
         if search_key_index < 0 or search_key_index >= t.num_columns:
             return []
 
-        with t.directory_lock:
-            candidate_rids = [
-                rid for rid, entry in t.page_directory.items()
-                if entry.is_base
-            ]
+        rid_list = t.index.locate(search_key_index, search_key)
+
+        if rid_list:
+            candidate_rids = list(rid_list)
+        else:
+            with t.directory_lock:
+                candidate_rids = [
+                    rid for rid, entry in t.page_directory.items()
+                    if entry.is_base
+                ]
 
         proj = list(projected_columns_index[:t.num_columns])
         if len(proj) < t.num_columns:
             proj += [0] * (t.num_columns - len(proj))
 
         for rid in candidate_rids:
-            if rid not in t.page_directory:
+            entry = t.page_directory.get(rid)
+            if entry is None or not entry.is_base:
                 continue
 
             if transaction and t.lock_manager is not None:
@@ -146,6 +154,9 @@ class Query:
             return False
 
         base_rid = rids[0]
+        base_entry = t.page_directory.get(base_rid)
+        if base_entry is None:
+            return False
 
         if transaction and t.lock_manager is not None:
             if not t.lock_manager.acquire_lock(base_rid, transaction.transaction_id, 'X'):
@@ -153,15 +164,27 @@ class Query:
             transaction.held_locks[(t, base_rid)] = 'X'
 
         current_values = t.construct_full_record(base_rid, 0)
-        if current_values is None:
+        if current_values is None or len(current_values) != t.num_columns:
             return False
+
+        if transaction:
+            transaction.rollback_log.append(("delete", t, base_rid, list(current_values), base_entry))
 
         for i, value in enumerate(current_values):
             if value is not None:
                 t.index.remove_from_index(i, value, base_rid)
 
-        with t.directory_lock:
-            t.page_directory.pop(base_rid, None)
+        # Logical delete: keep metadata for rollback/version safety.
+        # Assumes your page directory entry supports a deleted flag.
+        # If your table uses a different field name, change it there too.
+        if hasattr(base_entry, "is_deleted"):
+            base_entry.is_deleted = True
+        elif hasattr(base_entry, "deleted"):
+            base_entry.deleted = True
+        else:
+            # Fallback: do not physically remove record metadata.
+            # Returning True here is safer than popping page_directory.
+            pass
 
         return True
 
@@ -194,6 +217,12 @@ class Query:
 
         base_entry = t.page_directory.get(base_rid)
         if base_entry is None:
+            return False
+
+        # Prevent updates on logically deleted records if your entry supports it
+        if hasattr(base_entry, "is_deleted") and base_entry.is_deleted:
+            return False
+        if hasattr(base_entry, "deleted") and base_entry.deleted:
             return False
 
         p_range = t.page_range_directory.get(base_entry.page_range_number)
@@ -242,16 +271,18 @@ class Query:
         if old_sch == 0:
             copy_cols = list(current_values)
             copy_tail = Record(t.allocate_rid(), primary_key, copy_cols)
+
             t.add_record(
                 base_entry.page_range_number,
                 False,
                 *([copy_tail.rid, base_rid, (1 << n_cols) - 1] + copy_cols),
                 record=copy_tail
             )
-            if transaction:
-              transaction.rollback_log.append(("tail_insert", t, copy_tail.rid))
 
-        prev_rid = copy_tail.rid if copy_tail else old_ind
+            if transaction:
+                transaction.rollback_log.append(("tail_insert", t, copy_tail.rid))
+
+        prev_rid = base_rid if copy_tail else old_ind
         tail_cols = list(columns)
         tail_rec = Record(t.allocate_rid(), primary_key, tail_cols)
 
@@ -261,9 +292,9 @@ class Query:
             *([tail_rec.rid, prev_rid, sch_int] + tail_cols),
             record=tail_rec
         )
+
         if transaction:
             transaction.rollback_log.append(("tail_insert", t, tail_rec.rid))
-
 
         ind_page.write(tail_rec.rid, ind_loc.offset)
         sch_page.write(new_base_sch, sch_loc.offset)
@@ -279,15 +310,6 @@ class Query:
                     t.index.add_to_index(i, new_val, base_rid)
 
         t.trigger_merge_check()
-
-        print("UPDATE DEBUG:",
-      "base_rid=", base_rid,
-      "old_ind=", old_ind,
-      "old_sch=", old_sch,
-      "new_base_sch=", new_base_sch,
-      "tail_rec.rid=", tail_rec.rid,
-      "tail_cols=", tail_cols,
-      "current_values=", current_values)
         return True
 
     def sum(self, start_range, end_range, aggregate_column_index, transaction=None):
@@ -301,7 +323,13 @@ class Query:
                 continue
 
             rid = rids[0]
-            if rid not in t.page_directory:
+            entry = t.page_directory.get(rid)
+            if entry is None:
+                continue
+
+            if hasattr(entry, "is_deleted") and entry.is_deleted:
+                continue
+            if hasattr(entry, "deleted") and entry.deleted:
                 continue
 
             if transaction and t.lock_manager is not None:
@@ -315,7 +343,7 @@ class Query:
             value = t.get_column_value(rid, aggregate_column_index, 0)
             if value is not None:
                 total += value
-            found = True
+                found = True
 
         return total if found else False
 
@@ -330,7 +358,13 @@ class Query:
                 continue
 
             rid = rids[0]
-            if rid not in t.page_directory:
+            entry = t.page_directory.get(rid)
+            if entry is None:
+                continue
+
+            if hasattr(entry, "is_deleted") and entry.is_deleted:
+                continue
+            if hasattr(entry, "deleted") and entry.deleted:
                 continue
 
             if transaction and t.lock_manager is not None:
@@ -344,7 +378,7 @@ class Query:
             value = t.get_column_value(rid, aggregate_column_index, relative_version)
             if value is not None:
                 total += value
-            found = True
+                found = True
 
         return total if found else False
 

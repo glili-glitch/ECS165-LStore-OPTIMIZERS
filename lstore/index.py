@@ -1,38 +1,41 @@
 import threading
 
-class Index:
 
-    # every index is a dictionary that maps a column value to a set of RIDs 
+class Index:
+    # every index is a dictionary that maps a column value to a set of RIDs
     def __init__(self, table):
-        self.indices = [None] *  table.num_columns
+        self.indices = [None] * table.num_columns
         self.table = table
         self.lock = threading.Lock()
-        # Key column should be indexed by default (commonly column 0).
-        
-        self.create_index(table.key)
-        pass
 
+        # Primary key column indexed by default
+        self.create_index(table.key)
 
     def add_to_index(self, column, value, rid):
         with self.lock:
             if self.indices[column] is None:
                 self.create_index_unlocked(column)
+
             idx = self.indices[column]
-            if value in idx: 
+
+            if value in idx:
                 rids_set = idx[value]
                 if rids_set is None:
                     rids_set = set()
                 rids_set.add(rid)
                 idx[value] = rids_set
             else:
-                idx[value] = set([rid])
+                idx[value] = {rid}
+
             return True
 
     def remove_from_index(self, column, value, rid):
         with self.lock:
             if self.indices[column] is None:
                 return False
+
             idx = self.indices[column]
+
             if value in idx:
                 rids_set = idx[value]
                 if rids_set is not None:
@@ -43,22 +46,21 @@ class Index:
                         idx[value] = rids_set
             else:
                 return False
+
             return True
 
     def locate(self, column, value):
         with self.lock:
             if self.indices[column] is None:
-                return None
+                return []
+
             idx = self.indices[column]
             rids = idx.get(value, None)
+
             if rids is None:
                 return []
+
             return list(rids)
-
-
-    """
-    # Returns the RIDs of all records with values in column "column" between "begin" and "end"
-    """
 
     def locate_range(self, begin, end, column):
         with self.lock:
@@ -71,16 +73,15 @@ class Index:
 
     def locate_unlocked(self, column, value):
         if self.indices[column] is None:
-            return None
+            return []
+
         idx = self.indices[column]
         rids = idx.get(value, None)
+
         if rids is None:
             return []
-        return list(rids)
 
-    """
-    # optional: Create index on specific column
-    """
+        return list(rids)
 
     def create_index(self, column_number):
         with self.lock:
@@ -90,15 +91,18 @@ class Index:
         idx = {}
         self.indices[column_number] = idx
 
-        # Populate index from existing data (supports creating indexes after inserts)
+        # Build index from existing base records only
         if hasattr(self.table, 'page_directory') and self.table.page_directory:
             for rid, entry in self.table.page_directory.items():
                 if not entry.is_base:
                     continue
-                # Get the latest value for this column
+                if hasattr(entry, "is_deleted") and entry.is_deleted:
+                    continue
+
                 columns = self.table.construct_full_record(rid)
                 if columns is None or len(columns) <= column_number:
                     continue
+
                 value = columns[column_number]
                 if value is not None:
                     if value in idx:
@@ -107,10 +111,6 @@ class Index:
                         idx[value] = {rid}
 
         return True
-    
-    """
-    # optional: Drop index of specific column
-    """
 
     def drop_index(self, column_number):
         with self.lock:

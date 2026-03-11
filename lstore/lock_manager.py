@@ -3,52 +3,62 @@ import threading
 
 class LockManager:
     def __init__(self):
-        self.locks = {}  # RID -> {'type': 'S'/'X', 'holders': set(transaction_ids)
+        # rid -> {'type': 'S' or 'X', 'holders': set(transaction_ids)}
+        self.locks = {}
         self.lock_mutex = threading.Lock()
 
     def acquire_lock(self, rid, transaction_id, lock_type):
         """
-        Acquire a lock on a record (RID) for a transaction.
-        Implements No-Wait: Returns False if lock cannot be granted immediately.
+        No-Wait 2PL:
+        - grant immediately if compatible
+        - otherwise return False immediately
         """
         with self.lock_mutex:
             if rid not in self.locks:
-                self.locks[rid] = {'type': lock_type, 'holders': {transaction_id}}
+                self.locks[rid] = {
+                    'type': lock_type,
+                    'holders': {transaction_id}
+                }
                 return True
-            
+
             lock = self.locks[rid]
-            
-            # Case 1: Transaction already holds the lock
+
+            # Transaction already holds this lock
             if transaction_id in lock['holders']:
+                # already has X, or is asking again for S
                 if lock['type'] == 'X' or lock_type == 'S':
                     return True
-                # Upgrade S -> X
-                if len(lock['holders']) == 1:
-                    lock['type'] = 'X'
-                    return True
-                else:
-                    # Others hold S-lock, cannot upgrade
+
+                # upgrade S -> X only if this transaction is the sole holder
+                if lock['type'] == 'S' and lock_type == 'X':
+                    if len(lock['holders']) == 1:
+                        lock['type'] = 'X'
+                        return True
                     return False
 
-            # Case 2: No-Wait logic for new holders
+            # compatible shared lock
             if lock['type'] == 'S' and lock_type == 'S':
                 lock['holders'].add(transaction_id)
                 return True
-            
-            # Conflict (X-lock exists, or trying to acquire X-lock while S-locks exist)
+
+            # all other cases conflict under no-wait
             return False
 
     def release_locks(self, transaction_id, rids):
-        """Release all locks held by a specific transaction."""
+        """
+        Release all locks held by transaction_id on the given RIDs.
+        """
         with self.lock_mutex:
-            
-            for item in rids:
-                rid = item[1] if isinstance(item, tuple) else item
-
+            for rid in rids:
                 if rid in self.locks:
                     lock = self.locks[rid]
+
                     if transaction_id in lock['holders']:
                         lock['holders'].remove(transaction_id)
+
                         if not lock['holders']:
                             del self.locks[rid]
-
+                        elif lock['type'] == 'X':
+                            # defensive fallback: X should only have one holder,
+                            # but if state ever gets inconsistent, downgrade safely
+                            lock['type'] = 'S'

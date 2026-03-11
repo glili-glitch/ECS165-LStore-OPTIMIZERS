@@ -21,6 +21,7 @@ class PageDirectoryEntry:
     page_range_number: int
     is_base: bool
     data_locations: List[PageCoord]
+    is_deleted: bool = False
 
 
 class Record:
@@ -58,8 +59,6 @@ class Table:
             rid = self._next_rid
             self._next_rid += 1
             return rid
-        
-    
 
     def _read_page_value(self, entry, col_idx):
         if entry is None:
@@ -88,7 +87,7 @@ class Table:
         with self.directory_lock:
             entry = self.page_directory.get(rid)
 
-        if not entry:
+        if not entry or entry.is_deleted:
             return None
 
         pr = self.page_range_directory.get(entry.page_range_number)
@@ -138,14 +137,16 @@ class Table:
                 self.page_directory[record.rid] = PageDirectoryEntry(
                     page_range_number=page_range_number,
                     is_base=is_base,
-                    data_locations=new_locs
+                    data_locations=new_locs,
+                    is_deleted=False
                 )
 
             pr.add_record(is_base, record)
 
     def delete_tail_record(self, rid):
         with self.directory_lock:
-             entry = self.page_directory.pop(rid, None)
+            entry = self.page_directory.pop(rid, None)
+
         if not entry:
             return
 
@@ -160,7 +161,7 @@ class Table:
         with self.directory_lock:
             base_entry = self.page_directory.get(rid)
 
-        if not base_entry or not base_entry.is_base:
+        if not base_entry or not base_entry.is_base or base_entry.is_deleted:
             return None
 
         if relative_version > 0:
@@ -194,7 +195,7 @@ class Table:
             with self.directory_lock:
                 tail_entry = self.page_directory.get(curr_rid)
 
-            if tail_entry is None or tail_entry.is_base:
+            if tail_entry is None or tail_entry.is_base or tail_entry.is_deleted:
                 break
 
             tail_record = pr.get_record(False, curr_rid)
@@ -233,11 +234,6 @@ class Table:
             target_index = 0
         if target_index >= len(versions):
             target_index = len(versions) - 1
-            print("VERSION DEBUG:",
-      "rid=", rid,
-      "relative_version=", relative_version,
-      "versions=", versions,
-      "target_index=", target_index)
 
         return versions[target_index][:]
 
@@ -283,7 +279,7 @@ class Table:
 
             base_rids = [
                 rid for rid, entry in self.page_directory.items()
-                if entry.is_base and entry.page_range_number == pr_num
+                if entry.is_base and entry.page_range_number == pr_num and not entry.is_deleted
             ]
 
         copied_pages = []
@@ -305,7 +301,7 @@ class Table:
 
             with self.directory_lock:
                 entry = self.page_directory.get(base_rid)
-                if entry is None:
+                if entry is None or entry.is_deleted:
                     continue
                 locations = entry.data_locations
 
@@ -327,7 +323,7 @@ class Table:
     def rollback_record(self, rid, old_indirection, old_schema):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-            if not entry:
+            if not entry or entry.is_deleted:
                 return
             pr = self.page_range_directory[entry.page_range_number]
 
@@ -342,7 +338,7 @@ class Table:
     def set_indirection(self, rid, val):
         with self.directory_lock:
             e = self.page_directory.get(rid)
-            if not e:
+            if not e or e.is_deleted:
                 return
             pr = self.page_range_directory[e.page_range_number]
             l = e.data_locations[INDIRECTION_COLUMN]
@@ -351,7 +347,7 @@ class Table:
     def set_schema(self, rid, val):
         with self.directory_lock:
             e = self.page_directory.get(rid)
-            if not e:
+            if not e or e.is_deleted:
                 return
             pr = self.page_range_directory[e.page_range_number]
             l = e.data_locations[SCHEMA_ENCODING_COLUMN]
@@ -365,13 +361,16 @@ class Table:
                 if rid in pr.base_records:
                     del pr.base_records[rid]
                     pr.num_records -= 1
+                elif rid in pr.tail_records:
+                    del pr.tail_records[rid]
+
         for i, val in enumerate(columns):
             self.index.remove_from_index(i, val, rid)
 
     def get_indirection(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-        if not entry:
+        if not entry or entry.is_deleted:
             return 0
         pr = self.page_range_directory[entry.page_range_number]
         loc = entry.data_locations[INDIRECTION_COLUMN]
@@ -380,7 +379,7 @@ class Table:
     def get_schema(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
-        if not entry:
+        if not entry or entry.is_deleted:
             return 0
         pr = self.page_range_directory[entry.page_range_number]
         loc = entry.data_locations[SCHEMA_ENCODING_COLUMN]

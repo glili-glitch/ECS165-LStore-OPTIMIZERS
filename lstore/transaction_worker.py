@@ -8,34 +8,32 @@ class TransactionWorker:
 
     def __init__(self, transactions=None):
         self.stats = []
-        if transactions is None:
-            self.transactions = []
-        else:
-            self.transactions = transactions
+        self.transactions = transactions if transactions is not None else []
         self.result = 0
         self.thread = None
 
     def add_transaction(self, t):
         self.transactions.append(t)
 
-    """
-    Runs all transactions as a thread
-    """
     def run(self):
+        """
+        Runs all transactions in a separate thread.
+        """
         self.thread = threading.Thread(target=self.__run)
         self.thread.start()
 
-    """
-    Waits for the worker to finish
-    """
     def join(self):
-        if self.thread:
+        """
+        Waits for the worker to finish.
+        """
+        if self.thread is not None:
             self.thread.join()
 
     def __run(self):
+        self.stats = []
+
         for transaction in self.transactions:
             success = transaction.run()
             self.stats.append(success)
 
-        # stores the number of transactions that committed
         self.result = sum(1 for x in self.stats if x)
