@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass
 from typing import List
+from lstore.lock_manager import LockManager 
 from lstore.index import Index
 from lstore.page import Page
 
@@ -47,7 +48,7 @@ class Table:
         self.merge_threshold = 1000
         self._update_count = 0
         self._merge_lock = threading.Lock()
-        self.lock_manager = None
+        self.lock_manager = LockManager()
         self.directory_lock = threading.Lock()
 
     def allocate_base_rid(self):
