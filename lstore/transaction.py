@@ -78,6 +78,6 @@ class Transaction:
 
         for table_obj, rids in groups.items():
             if table_obj.lock_manager is not None:
-                table_obj.lock_manager.release_locks(self.transaction_id, rids)
+                table_obj.lock_manager.release_locks(table_obj, self.transaction_id, rids)
 
         self.held_locks.clear()
