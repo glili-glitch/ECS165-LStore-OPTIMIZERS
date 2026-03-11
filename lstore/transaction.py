@@ -54,10 +54,7 @@ class Transaction:
 
                     restored_entry = table_obj.page_directory.get(rid)
                     if restored_entry is not None:
-                        if hasattr(restored_entry, "is_deleted"):
-                            restored_entry.is_deleted = False
-                        elif hasattr(restored_entry, "deleted"):
-                            restored_entry.deleted = False
+                        restored_entry.is_deleted = False
 
                     for i, value in enumerate(old_values):
                         if value is not None:

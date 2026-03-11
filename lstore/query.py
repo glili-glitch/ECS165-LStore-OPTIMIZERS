@@ -154,10 +154,9 @@ class Query:
             return False
 
         if transaction:
-            pr = t.page_range_directory.get(base_entry.page_range_number)
-            base_record = pr.get_record(True, base_rid) if pr is not None else None
+           
             transaction.rollback_log.append(
-                ("delete", t, base_rid, list(current_values), base_entry, base_record)
+                ("delete", t, base_rid, list(current_values))
             )
 
         for i, value in enumerate(current_values):
