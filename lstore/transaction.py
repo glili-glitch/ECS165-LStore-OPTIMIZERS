@@ -49,7 +49,7 @@ class Transaction:
                 table_obj.delete_record(rid, columns)
 
             elif action == "delete":
-                _, table_obj, rid, old_values, base_entry = entry
+                _, table_obj, rid, old_values, base_entry, base_record = entry
 
                 # restore page directory entry if needed
                 if rid not in table_obj.page_directory:
@@ -61,6 +61,12 @@ class Transaction:
                         restored_entry.is_deleted = False
                     elif hasattr(restored_entry, "deleted"):
                         restored_entry.deleted = False
+            pr = table_obj.page_range_directory.get(base_entry.page_range_number)
+            if pr is not None and base_record is not None:
+
+                if rid not in pr.base_records:
+                   pr.base_records[rid] = base_record
+                   pr.num_records += 1
 
                 for i, value in enumerate(old_values):
                     if value is not None:
