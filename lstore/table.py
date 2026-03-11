@@ -142,7 +142,7 @@ class Table:
                 )
 
             pr.add_record(is_base, record)
-            
+
     def delete_tail_record(self, rid):
         with self.directory_lock:
              entry = self.page_directory.pop(rid, None)
@@ -233,6 +233,11 @@ class Table:
             target_index = 0
         if target_index >= len(versions):
             target_index = len(versions) - 1
+            print("VERSION DEBUG:",
+      "rid=", rid,
+      "relative_version=", relative_version,
+      "versions=", versions,
+      "target_index=", target_index)
 
         return versions[target_index][:]
 

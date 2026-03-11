@@ -279,6 +279,15 @@ class Query:
                     t.index.add_to_index(i, new_val, base_rid)
 
         t.trigger_merge_check()
+
+        print("UPDATE DEBUG:",
+      "base_rid=", base_rid,
+      "old_ind=", old_ind,
+      "old_sch=", old_sch,
+      "new_base_sch=", new_base_sch,
+      "tail_rec.rid=", tail_rec.rid,
+      "tail_cols=", tail_cols,
+      "current_values=", current_values)
         return True
 
     def sum(self, start_range, end_range, aggregate_column_index, transaction=None):
