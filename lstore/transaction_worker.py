@@ -1,12 +1,9 @@
 import threading
 import time
+import random
 
 
 class TransactionWorker:
-    """
-    Creates a transaction worker object.
-    """
-
     def __init__(self, transactions=None):
         self.stats = []
         self.transactions = transactions if transactions is not None else []
@@ -29,13 +26,14 @@ class TransactionWorker:
 
         for transaction in self.transactions:
             success = False
+            delay = 0.001
 
-            # Retry until commit succeeds
             while not success:
                 success = transaction.run()
                 if not success:
-                    time.sleep(0.001)
+                    time.sleep(delay + random.uniform(0, delay))
+                    delay = min(delay * 2, 0.05)
 
-            self.stats.append(success)
+            self.stats.append(True)
 
         self.result = sum(1 for x in self.stats if x)
