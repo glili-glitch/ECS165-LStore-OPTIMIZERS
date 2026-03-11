@@ -1,6 +1,6 @@
 import threading
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 from lstore.index import Index
 from lstore.page import Page
 
@@ -158,6 +158,10 @@ class Table:
             del pr.tail_records[rid]
 
     def construct_full_record(self, rid, relative_version=0):
+        """
+        Construct a record with the specified version
+        relative_version: 0 = current, -1 = one version back, -2 = two versions back, etc.
+        """
         with self.directory_lock:
             base_entry = self.page_directory.get(rid)
 
@@ -171,6 +175,7 @@ class Table:
         if pr is None:
             return None
 
+        # Get base record values
         base_record = pr.get_record(True, rid)
         if base_record is None or base_record.columns is None:
             return None
@@ -180,11 +185,14 @@ class Table:
 
         base_values = list(base_record.columns)
 
+        # Get the latest tail record RID from indirection column
         latest_tail_rid = self._read_page_value(base_entry, INDIRECTION_COLUMN)
 
+        # If no updates have been made, return base values
         if latest_tail_rid in (None, 0, rid):
             return base_values[:]
 
+        # Build the tail chain (from most recent to oldest)
         tail_chain = []
         visited = set()
         curr_rid = latest_tail_rid
@@ -207,40 +215,51 @@ class Table:
 
             tail_chain.append((tail_entry, tail_record))
 
+            # Get next in chain (older version)
             next_rid = self._read_page_value(tail_entry, INDIRECTION_COLUMN)
             if next_rid == curr_rid:
                 break
 
             curr_rid = next_rid
 
+        # If no tail records found, return base values
+        if not tail_chain:
+            return base_values[:]
+
+        # Build version history from oldest to newest
         versions = [base_values[:]]
         current = base_values[:]
 
-        for _, tail_record in reversed(tail_chain):
+        # Traverse from oldest to newest (reverse the chain)
+        for tail_entry, tail_record in reversed(tail_chain):
+            # Create a new version by applying updates from this tail record
+            new_version = current[:]
             changed = False
 
             for i in range(self.num_columns):
                 val = tail_record.columns[i]
-                if val is not None and current[i] != val:
-                    current[i] = val
+                if val is not None and new_version[i] != val:
+                    new_version[i] = val
                     changed = True
 
             if changed:
-                versions.append(current[:])
+                versions.append(new_version[:])
+                current = new_version[:]
 
-
-                # Safety check before indexing
-                if not versions:
-                   return None
-
-        target_index = len(versions) - 1 + relative_version
-
-        if target_index < 0:
-            target_index = 0
-        if target_index >= len(versions):
-            target_index = len(versions) - 1
-
-        return versions[target_index][:]
+        # Calculate target index based on relative_version
+        # versions[0] = oldest (base), versions[-1] = newest (current)
+        if relative_version == 0:
+            return versions[-1][:]  # Return newest version
+        elif relative_version < 0:
+            # -1 means one version back from newest
+            target_index = len(versions) - 1 + relative_version
+            if target_index < 0:
+                return None  # Requested version doesn't exist
+            if target_index >= len(versions):
+                return None
+            return versions[target_index][:]
+        else:
+            return None  # Invalid relative_version
 
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
