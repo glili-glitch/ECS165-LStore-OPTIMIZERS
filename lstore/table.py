@@ -52,7 +52,7 @@ class Table:
 
     def allocate_base_rid(self):
         with self._rid_lock:
-            rid = self._next_base_rid()
+            rid = self._next_base_rid
             self._next_base_rid += 1
             return rid
         

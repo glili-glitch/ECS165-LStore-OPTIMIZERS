@@ -101,6 +101,10 @@ if rids:
     print("LATEST =", grades_table.construct_full_record(rid, 0))
     print("V-1    =", grades_table.construct_full_record(rid, -1))
     print("V-2    =", grades_table.construct_full_record(rid, -2))
+
+    print("KEY =", key)
+    print("SELECT RESULT =", query.select(key, 0, [1, 1, 1, 1, 1]))
+    print("INDEX RIDS =", grades_table.index.locate(0, key))
     result = query.select_version(key, 0, [1, 1, 1, 1, 1], -1)[0].columns
     if correct != result:
         print('select error on primary key', key, ':', result, ', correct:', correct)

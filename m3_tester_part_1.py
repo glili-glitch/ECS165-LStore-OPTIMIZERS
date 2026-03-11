@@ -62,6 +62,8 @@ for i in range(num_threads):
 # wait for workers to finish
 for i in range(num_threads):
     transaction_workers[i].join()
+    for i, worker in enumerate(transaction_workers):
+      print("worker", i, "stats =", worker.stats, "result =", worker.result)
 
 
 # Check inserted records using select query in the main thread outside workers

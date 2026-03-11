@@ -16,11 +16,12 @@ class Transaction:
             for query, table_obj, args in self.queries:
                 result = query(*args, transaction=self)
                 if result is False:
+                    print("QUERY FAILED:", query.__name__, args)
                     return self.abort()
             return self.commit()
-        except Exception:
+        except Exception as e:
+            print("TRANSACTION EXCEPTION:", type(e).__name__, e)
             return self.abort()
-
     def abort(self):
         for entry in reversed(self.rollback_log):
             action = entry[0]
