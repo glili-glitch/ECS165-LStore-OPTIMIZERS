@@ -8,10 +8,8 @@ class Query:
 
     def insert(self, *columns, transaction=None):
         t = self.table
-        print("INSERT CALLED:", columns)
 
         if len(columns) != t.num_columns:
-            print("INSERT FAIL: bad len")
             return False
 
         primary_key = columns[t.key]
@@ -19,11 +17,9 @@ class Query:
         with t.insert_lock:
             existing = t.index.locate(t.key, primary_key)
             if existing:
-                print("INSERT FAIL: duplicate key", primary_key)
                 return False
 
             rid = t.allocate_base_rid()
-            print("ALLOCATED BASE RID:", rid)
             page_range_number = (rid - 1) // table.NUM_RECORDS_PER_RANGE
 
             if page_range_number not in t.page_range_directory:
@@ -35,7 +31,6 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'X'):
-                    print("INSERT FAIL: lock")
                     return False
                 transaction.held_locks[(t, rid)] = 'X'
 
@@ -51,7 +46,7 @@ class Query:
 
             if transaction:
                 transaction.rollback_log.append(("insert", t, rid, col_list))
-        print("INSERT SUCCESS:", primary_key, rid)
+
         return True
 
     def select(self, search_key, search_key_index, projected_columns_index, transaction=None):
@@ -161,7 +156,9 @@ class Query:
         if transaction:
             pr = t.page_range_directory.get(base_entry.page_range_number)
             base_record = pr.get_record(True, base_rid) if pr is not None else None
-            transaction.rollback_log.append(("delete", t, base_rid, list(current_values), base_record))
+            transaction.rollback_log.append(
+                ("delete", t, base_rid, list(current_values), base_entry, base_record)
+            )
 
         for i, value in enumerate(current_values):
             if value is not None:
