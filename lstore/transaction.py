@@ -32,7 +32,6 @@ class Transaction:
 
                 if action == "index_update":
                     _, table_obj, rid, col_idx, old_val, new_val = entry
-
                     if new_val is not None:
                         table_obj.index.remove_from_index(col_idx, new_val, rid)
                     if old_val is not None:
@@ -51,10 +50,7 @@ class Transaction:
                     table_obj.delete_record(rid, columns)
 
                 elif action == "delete":
-                    _, table_obj, rid, old_values, base_entry, base_record = entry
-
-                    if rid not in table_obj.page_directory:
-                        table_obj.page_directory[rid] = base_entry
+                    _, table_obj, rid, old_values = entry
 
                     restored_entry = table_obj.page_directory.get(rid)
                     if restored_entry is not None:
@@ -62,12 +58,6 @@ class Transaction:
                             restored_entry.is_deleted = False
                         elif hasattr(restored_entry, "deleted"):
                             restored_entry.deleted = False
-
-                    pr = table_obj.page_range_directory.get(base_entry.page_range_number)
-                    if pr is not None and base_record is not None:
-                        if rid not in pr.base_records:
-                            pr.base_records[rid] = base_record
-                            pr.num_records += 1
 
                     for i, value in enumerate(old_values):
                         if value is not None:
@@ -86,7 +76,6 @@ class Transaction:
 
     def _release_all_locks(self):
         groups = {}
-
         for (table_obj, rid) in self.held_locks.keys():
             groups.setdefault(table_obj, []).append(rid)
 
