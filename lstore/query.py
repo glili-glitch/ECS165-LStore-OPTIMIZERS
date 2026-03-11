@@ -73,9 +73,6 @@ class Query:
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
-            if rid not in t.page_directory:
-                continue
-
             columns = t.construct_full_record(rid, 0)
             if columns is None or len(columns) != t.num_columns:
                 continue
@@ -95,50 +92,59 @@ class Query:
         return records
 
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version, transaction=None):
+        """
+        Select records with versioning support
+        relative_version: -1 = one version back, -2 = two versions back, 0 = current version
+        """
         t = self.table
         records = []
 
+        # Validate search key index
         if search_key_index < 0 or search_key_index >= t.num_columns:
             return []
 
+        # Get RIDs from index that match the search key
         rid_list = t.index.locate(search_key_index, search_key)
+        
+        # If no records found in index, return empty list
+        if not rid_list:
+            return []
 
-        if rid_list:
-            candidate_rids = list(rid_list)
-        else:
-            with t.directory_lock:
-                candidate_rids = [
-                    rid for rid, entry in t.page_directory.items()
-                    if entry.is_base
-                ]
-
+        # Prepare projection columns
         proj = list(projected_columns_index[:t.num_columns])
         if len(proj) < t.num_columns:
             proj += [0] * (t.num_columns - len(proj))
 
-        for rid in candidate_rids:
+        # Iterate through matching RIDs only
+        for rid in rid_list:
             entry = t.page_directory.get(rid)
+            
+            # Skip if entry doesn't exist or is not a base record
             if entry is None or not entry.is_base:
                 continue
 
+            # Acquire lock if in transaction
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
-                  transaction.status = "ABORTED"
-                  return []
+                    transaction.status = "ABORTED"
+                    return []
                 transaction.held_locks[(t, rid)] = 'S'
 
-            if rid not in t.page_directory:
-                continue
-
+            # Construct record with specified version
             columns = t.construct_full_record(rid, relative_version)
+            
+            # Skip if construction failed
             if columns is None or len(columns) != t.num_columns:
                 continue
 
+            # Verify search key matches (safety check)
             if columns[search_key_index] != search_key:
                 continue
 
+            # Get primary key
             primary_key = t.get_primary_key(rid)
 
+            # Apply projection
             res_cols = [
                 columns[i] if proj[i] == 1 else None
                 for i in range(t.num_columns)
@@ -171,18 +177,16 @@ class Query:
         if transaction:
             transaction.rollback_log.append(("delete", t, base_rid, list(current_values), base_entry))
 
+        # Remove from indexes
         for i, value in enumerate(current_values):
             if value is not None:
                 t.index.remove_from_index(i, value, base_rid)
 
-        
+        # Mark as deleted
         if hasattr(base_entry, "is_deleted"):
             base_entry.is_deleted = True
         elif hasattr(base_entry, "deleted"):
             base_entry.deleted = True
-        else:
-            
-            pass
 
         return True
 
@@ -217,7 +221,7 @@ class Query:
         if base_entry is None:
             return False
 
-        # Prevent updates on logically deleted records if your entry supports it
+        # Prevent updates on logically deleted records
         if hasattr(base_entry, "is_deleted") and base_entry.is_deleted:
             return False
         if hasattr(base_entry, "deleted") and base_entry.deleted:
@@ -335,15 +339,12 @@ class Query:
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
-            if rid not in t.page_directory:
-                continue
-
             value = t.get_column_value(rid, aggregate_column_index, 0)
             if value is not None:
                 total += value
                 found = True
 
-        return total if found else False
+        return total if found else 0  # Return 0 instead of False for consistency
 
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version, transaction=None):
         t = self.table
@@ -360,25 +361,25 @@ class Query:
             if entry is None:
                 continue
 
+            # Skip deleted records
             if hasattr(entry, "is_deleted") and entry.is_deleted:
                 continue
             if hasattr(entry, "deleted") and entry.deleted:
                 continue
 
+            # Acquire lock if in transaction
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(rid, transaction.transaction_id, 'S'):
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
-            if rid not in t.page_directory:
-                continue
-
+            # Get value with specified version
             value = t.get_column_value(rid, aggregate_column_index, relative_version)
             if value is not None:
                 total += value
                 found = True
 
-        return total if found else False
+        return total if found else 0  # Return 0 instead of False for consistency
 
     def increment(self, key, column, transaction=None):
         res = self.select(key, self.table.key, [1] * self.table.num_columns, transaction=transaction)
