@@ -23,7 +23,12 @@ class TransactionWorker:
         self.stats = []
 
         for transaction in self.transactions:
-            success = transaction.run()
+            success = False
+
+            # Retry lock-conflict aborts until commit
+            while not success:
+                success = transaction.run()
+
             self.stats.append(success)
 
         self.result = sum(1 for x in self.stats if x)
