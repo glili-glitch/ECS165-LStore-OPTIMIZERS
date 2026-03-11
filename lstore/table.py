@@ -59,6 +59,29 @@ class Table:
             self._next_rid += 1
             return rid
 
+    def _read_page_value(self, entry, col_idx):
+        if entry is None:
+            return None
+        if col_idx < 0 or col_idx >= len(entry.data_locations):
+            return None
+
+        loc = entry.data_locations[col_idx]
+        if loc is None:
+            return None
+
+        pr = self.page_range_directory.get(entry.page_range_number)
+        if pr is None:
+            return None
+
+        pages = pr.base_pages if entry.is_base else pr.tail_pages
+
+        if col_idx >= len(pages):
+            return None
+        if loc.page_number < 0 or loc.page_number >= len(pages[col_idx]):
+            return None
+
+        return pages[col_idx][loc.page_number].read(loc.offset // 8)
+
     def get_primary_key(self, rid):
         with self.directory_lock:
             entry = self.page_directory.get(rid)
@@ -71,7 +94,10 @@ class Table:
             return None
 
         record = pr.get_record(entry.is_base, rid)
-        if not record:
+        if not record or record.columns is None:
+            return None
+
+        if self.key < 0 or self.key >= len(record.columns):
             return None
 
         return record.columns[self.key]
@@ -92,6 +118,9 @@ class Table:
             new_locs = [None] * (self.num_columns + 3)
 
             for i in range(self.num_columns + 3):
+                if i >= len(all_columns):
+                    break
+
                 if all_columns[i] is None:
                     continue
 
@@ -122,32 +151,20 @@ class Table:
         if relative_version > 0:
             return None
 
-        def _read(entry, col_idx):
-            if col_idx < 0 or col_idx >= len(entry.data_locations):
-                return None
+        pr = self.page_range_directory.get(base_entry.page_range_number)
+        if pr is None:
+            return None
 
-            loc = entry.data_locations[col_idx]
-            if loc is None:
-                return None
+        base_record = pr.get_record(True, rid)
+        if base_record is None or base_record.columns is None:
+            return None
 
-            pr = self.page_range_directory.get(entry.page_range_number)
-            if pr is None:
-                return None
+        if len(base_record.columns) != self.num_columns:
+            return None
 
-            pages = pr.base_pages if entry.is_base else pr.tail_pages
+        base_values = list(base_record.columns)
 
-            if col_idx >= len(pages):
-                return None
-            if loc.page_number < 0 or loc.page_number >= len(pages[col_idx]):
-                return None
-
-            return pages[col_idx][loc.page_number].read(loc.offset // 8)
-
-        base_values = []
-        for i in range(self.num_columns):
-            base_values.append(_read(base_entry, i + 3))
-
-        latest_tail_rid = _read(base_entry, INDIRECTION_COLUMN)
+        latest_tail_rid = self._read_page_value(base_entry, INDIRECTION_COLUMN)
 
         if latest_tail_rid in (None, 0, rid):
             return base_values[:]
@@ -165,9 +182,16 @@ class Table:
             if tail_entry is None or tail_entry.is_base:
                 break
 
-            tail_chain.append(tail_entry)
+            tail_record = pr.get_record(False, curr_rid)
+            if tail_record is None or tail_record.columns is None:
+                break
 
-            next_rid = _read(tail_entry, INDIRECTION_COLUMN)
+            if len(tail_record.columns) != self.num_columns:
+                break
+
+            tail_chain.append((tail_entry, tail_record))
+
+            next_rid = self._read_page_value(tail_entry, INDIRECTION_COLUMN)
             if next_rid == curr_rid:
                 break
 
@@ -176,11 +200,11 @@ class Table:
         versions = [base_values[:]]
         current = base_values[:]
 
-        for tail_entry in reversed(tail_chain):
+        for _, tail_record in reversed(tail_chain):
             changed = False
 
             for i in range(self.num_columns):
-                val = _read(tail_entry, i + 3)
+                val = tail_record.columns[i]
                 if val is not None and current[i] != val:
                     current[i] = val
                     changed = True
@@ -200,6 +224,8 @@ class Table:
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
         if full_record is None:
+            return None
+        if column_number < 0 or column_number >= len(full_record):
             return None
         return full_record[column_number]
 
@@ -272,9 +298,9 @@ class Table:
                 if value is None:
                     continue
 
-                copied_pages[col + 3][loc.page_number].data[loc.offset:loc.offset + 8] = int(value).to_bytes(
-                    8, byteorder="little", signed=True
-                )
+                copied_pages[col + 3][loc.page_number].data[
+                    loc.offset:loc.offset + 8
+                ] = int(value).to_bytes(8, byteorder="little", signed=True)
 
         return pr_num, copied_pages, current_max_rid
 
