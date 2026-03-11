@@ -164,6 +164,9 @@ class Table:
         if not base_entry or not base_entry.is_base or base_entry.is_deleted:
             return None
 
+        if relative_version > 0:
+            return None
+
         pr = self.page_range_directory.get(base_entry.page_range_number)
         if pr is None:
             return None
@@ -172,7 +175,8 @@ class Table:
         if base_record is None or base_record.columns is None:
             return None
 
-        
+        if len(base_record.columns) != self.num_columns:
+            return None
 
         base_values = list(base_record.columns)
 
@@ -191,44 +195,47 @@ class Table:
             with self.directory_lock:
                 tail_entry = self.page_directory.get(curr_rid)
 
-            if tail_entry is None or tail_entry.is_base:
-               break
+            if tail_entry is None or tail_entry.is_base or tail_entry.is_deleted:
+                break
 
-            tail_record = pr.get_record(False, curr)
+            tail_record = pr.get_record(False, curr_rid)
             if tail_record is None or tail_record.columns is None:
-               break
+                break
 
-        tail_chain.append(tail_record)
+            if len(tail_record.columns) != self.num_columns:
+                break
 
-        curr = self._read_page_value(tail_entry, INDIRECTION_COLUMN)
+            tail_chain.append((tail_entry, tail_record))
 
-            
+            next_rid = self._read_page_value(tail_entry, INDIRECTION_COLUMN)
+            if next_rid == curr_rid:
+                break
 
-            
+            curr_rid = next_rid
 
-        versions = [base_values.copy()]
-        current = base_values.copy()
+        versions = [base_values[:]]
+        current = base_values[:]
 
-        for tail_record in reversed(tail_chain):
-            
+        for _, tail_record in reversed(tail_chain):
+            changed = False
 
             for i in range(self.num_columns):
                 val = tail_record.columns[i]
-                if val is not None: 
-                 current[i] = val
-            versions.append(current.copy())     
-                    
+                if val is not None and current[i] != val:
+                    current[i] = val
+                    changed = True
 
-            index = len(versions) - 1 + relative_version
+            if changed:
+                versions.append(current[:])
 
-        
+        target_index = len(versions) - 1 + relative_version
 
-        if index < 0:
-            index = 0
-        if index >= len(versions):
-            index = len(versions) - 1
+        if target_index < 0:
+            target_index = 0
+        if target_index >= len(versions):
+            target_index = len(versions) - 1
 
-        return versions[index]
+        return versions[target_index][:]
 
     def get_column_value(self, rid, column_number, relative_version=0):
         full_record = self.construct_full_record(rid, relative_version)
