@@ -79,7 +79,7 @@ class Database:
             
             idx += 1
 
-        # Fix the RID counter so new records don't overlap old ones
+        
         highest_rid = self._find_max_rid()
         if highest_rid > 0:
             import lstore.query as q
@@ -92,12 +92,12 @@ class Database:
         if not os.path.exists(self.path):
             os.makedirs(self.path)
 
-        # Make sure background merges are finished
+        
         for t in self.tables:
             if hasattr(t, "wait_for_merge"):
                 t.wait_for_merge()
 
-        # Flush everything to disk
+        
         if self.bufferpool:
             self.bufferpool.write_all_pages()
 
@@ -137,10 +137,10 @@ class Database:
             return self.table_names[name]
         return None
 
-    # --- Helper methods for loading/saving ---
+    
 
     def _load_all_pages(self, table):
-        # Go through every page range and bring pages into bufferpool
+        
         for pr in table.page_range_directory.values():
             # Load base pages
             for col in pr.base_pages:
@@ -154,10 +154,10 @@ class Database:
                         self.bufferpool.load_page(p)
 
     def _rebuild_index(self, table):
-        # Re-insert all base records into the index
+        
         for rid, entry in table.page_directory.items():
             if entry.is_base:
-                # Get data and add to index
+                
                 row_data = table.construct_full_record(rid, 0)
                 for i in range(len(row_data)):
                     val = row_data[i]
@@ -260,7 +260,7 @@ class Database:
                 t_obj._update_count = t_updates
                 t_obj.page_range_directory = t_ranges
                 t_obj.page_directory = t_pdir
-                # Link ranges back to this table
+                
                 for pr in t_ranges.values():
                     pr.table = t_obj
                 return t_obj, i + 1
@@ -311,8 +311,7 @@ class Database:
         while i < len(lines):
             line = lines[i]
             if line == "PAGE_RANGE_END":
-                # Using a tiny helper class or type to init PageRange
-                # because PageRange expects a table object
+                
                 dummy_table = type('Obj', (object,), {'num_columns': len(base_p) - 3})
                 new_pr = PageRange(dummy_table, pr_num)
                 new_pr.base_pages = base_p
