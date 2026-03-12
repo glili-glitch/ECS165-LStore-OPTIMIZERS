@@ -8,7 +8,7 @@ import threading
 
 
 class BufferPool:
-    DEFAULT_POOL_SIZE = 1000
+    DEFAULT_POOL_SIZE = 10000
 
     def __init__(self, pool_size=None, disk_path=None):
         self.pool_size = pool_size or self.DEFAULT_POOL_SIZE
