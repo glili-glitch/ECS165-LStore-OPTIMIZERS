@@ -1,3 +1,5 @@
+import threading
+
 PAGE_SIZE = 4096
 COLUMN_ENTRY_SIZE = 8
 MAX_RECORDS_PER_PAGE = PAGE_SIZE // COLUMN_ENTRY_SIZE
@@ -6,15 +8,20 @@ MAX_RECORDS_PER_PAGE = PAGE_SIZE // COLUMN_ENTRY_SIZE
 class Page:
     _bufferpool = None
     _next_id = 1
+    _id_lock = threading.Lock()
 
     def __init__(self, page_id=None):
+        self.page_lock = threading.Lock()
+
         if page_id is None:
-            self.page_id = Page._next_id
-            Page._next_id += 1
+            with Page._id_lock:
+                self.page_id = Page._next_id
+                Page._next_id += 1
         else:
             self.page_id = page_id
-            if page_id >= Page._next_id:
-                Page._next_id = page_id + 1
+            with Page._id_lock:
+                if page_id >= Page._next_id:
+                    Page._next_id = page_id + 1
 
         self.num_records = 0
         self.current_offset = 0
@@ -24,14 +31,16 @@ class Page:
             Page._bufferpool.access(self)
 
     def _ensure_loaded(self):
-        if self.data is None:
-            if Page._bufferpool is not None:
-                Page._bufferpool.load_page(self)
+        with self.page_lock:
             if self.data is None:
-                self.data = bytearray(PAGE_SIZE)
+                if Page._bufferpool is not None:
+                    Page._bufferpool.load_page(self)
+                if self.data is None:
+                    self.data = bytearray(PAGE_SIZE)
 
     def has_capacity(self):
-        return self.num_records < MAX_RECORDS_PER_PAGE
+        with self.page_lock:
+            return self.num_records < MAX_RECORDS_PER_PAGE
 
     def write(self, value, offset=None):
         self._ensure_loaded()
@@ -40,26 +49,31 @@ class Page:
             Page._bufferpool.pin(self.page_id)
 
         try:
-            if value is None:
-                return True
+            with self.page_lock:
+                if value is None:
+                    return True
 
-            if offset is None:
-                offset = self.current_offset
-                if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
-                    return False
-                self.current_offset += COLUMN_ENTRY_SIZE
-                self.num_records += 1
-            else:
-                if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
-                    return False
-
-                # if writing exactly at the logical end, extend the page
-                if offset == self.current_offset:
+                if offset is None:
+                    offset = self.current_offset
+                    if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
+                        return False
                     self.current_offset += COLUMN_ENTRY_SIZE
                     self.num_records += 1
+                else:
+                    if offset + COLUMN_ENTRY_SIZE > PAGE_SIZE:
+                        return False
 
-            value_in_bytes = int(value).to_bytes(8, byteorder='little', signed=True)
-            self.data[offset: offset + COLUMN_ENTRY_SIZE] = value_in_bytes
+                    # if writing exactly at the logical end, extend the page
+                    if offset == self.current_offset:
+                        self.current_offset += COLUMN_ENTRY_SIZE
+                        self.num_records += 1
+
+                value_in_bytes = int(value).to_bytes(
+                    COLUMN_ENTRY_SIZE,
+                    byteorder='little',
+                    signed=True
+                )
+                self.data[offset: offset + COLUMN_ENTRY_SIZE] = value_in_bytes
 
             if Page._bufferpool is not None:
                 Page._bufferpool.access(self)
@@ -77,12 +91,13 @@ class Page:
             Page._bufferpool.pin(self.page_id)
 
         try:
-            if index >= self.num_records:
-                return None
+            with self.page_lock:
+                if index >= self.num_records:
+                    return None
 
-            start_offset = index * COLUMN_ENTRY_SIZE
-            end_offset = start_offset + COLUMN_ENTRY_SIZE
-            value_in_bytes = self.data[start_offset:end_offset]
+                start_offset = index * COLUMN_ENTRY_SIZE
+                end_offset = start_offset + COLUMN_ENTRY_SIZE
+                value_in_bytes = self.data[start_offset:end_offset]
 
             if Page._bufferpool is not None:
                 Page._bufferpool.access(self)
