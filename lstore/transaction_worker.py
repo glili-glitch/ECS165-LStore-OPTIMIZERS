@@ -1,4 +1,5 @@
 import threading
+import time
 
 
 class TransactionWorker:
@@ -23,13 +24,19 @@ class TransactionWorker:
         self.stats = []
 
         for transaction in self.transactions:
-            retries = 0
-            success = False
-
-            while retries < 5 and not success:
+            while True:
                 success = transaction.run()
-                retries += 1
 
-            self.stats.append(success)
+                if success:
+                    self.stats.append(True)
+                    break
+
+                # retry only lock-conflict aborts
+                if transaction.abort_due_to_lock:
+                    time.sleep(0.001)
+                    continue
+
+                self.stats.append(False)
+                break
 
         self.result = sum(1 for x in self.stats if x)

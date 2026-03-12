@@ -31,6 +31,7 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'X'):
+                    transaction.abort_due_to_lock = True
                     return False
                 transaction.held_locks[(t, rid)] = 'X'
 
@@ -71,6 +72,7 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
+                    transaction.abort_due_to_lock = True
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -112,6 +114,7 @@ class Query:
         for rid in candidate_rids:
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
+                    transaction.abort_due_to_lock = True
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -146,6 +149,7 @@ class Query:
 
         if transaction and t.lock_manager is not None:
             if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
+                transaction.abort_due_to_lock = True
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
 
@@ -185,6 +189,7 @@ class Query:
 
         if transaction and t.lock_manager is not None:
             if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
+                transaction.abort_due_to_lock = True
                 return False
             transaction.held_locks[(t, base_rid)] = 'X'
 
@@ -300,6 +305,7 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
+                    transaction.abort_due_to_lock = True
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 
@@ -327,6 +333,7 @@ class Query:
 
             if transaction and t.lock_manager is not None:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
+                    transaction.abort_due_to_lock = True
                     return False
                 transaction.held_locks[(t, rid)] = 'S'
 

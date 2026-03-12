@@ -7,6 +7,7 @@ class Transaction:
         self.transaction_id = uuid.uuid4()
         self.held_locks = {}   # (table_obj, rid) -> 'S' or 'X'
         self.rollback_log = []
+        self.abort_due_to_lock = False
 
     def add_query(self, query, table_obj, *args):
         self.queries.append((query, table_obj, args))
@@ -15,6 +16,7 @@ class Transaction:
         self.rollback_log = []
         self.held_locks = {}
         self.transaction_id = uuid.uuid4()
+        self.abort_due_to_lock = False
 
         try:
             for query, table_obj, args in self.queries:
