@@ -24,18 +24,19 @@ class TransactionWorker:
         self.stats = []
 
         for transaction in self.transactions:
-            # Retry only lock-conflict aborts a bounded number of times.
-            success = False
-            attempts = 0
-            while attempts < 20:
+            while True:
                 success = transaction.run()
-                if success:
-                    break
-                if not transaction.abort_due_to_lock:
-                    break
-                attempts += 1
-                time.sleep(0.001)
 
-            self.stats.append(success)
+                if success:
+                    self.stats.append(True)
+                    break
+
+                # retry only lock-conflict aborts
+                if transaction.abort_due_to_lock:
+                    time.sleep(0.001)
+                    continue
+
+                self.stats.append(False)
+                break
 
         self.result = sum(1 for x in self.stats if x)

@@ -33,7 +33,7 @@ class Query:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'X'):
                     transaction.abort_due_to_lock = True
                     return False
-                transaction.held_locks[(t, rid)] = 'X'
+                transaction.remember_lock(t, rid, 'X')
 
             t.add_record(
                 page_range_number,
@@ -74,7 +74,7 @@ class Query:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     transaction.abort_due_to_lock = True
                     return False
-                transaction.held_locks[(t, rid)] = 'S'
+                transaction.remember_lock(t, rid, 'S')
 
             columns = t.construct_full_record(rid, 0)
             if columns is None or len(columns) != t.num_columns:
@@ -105,18 +105,20 @@ class Query:
         if len(proj) < t.num_columns:
             proj += [0] * (t.num_columns - len(proj))
 
-        with t.directory_lock:
-            candidate_rids = [
-                rid for rid, entry in t.page_directory.items()
-                if entry.is_base and not entry.is_deleted
-            ]
+        rid_list = t.index.locate(search_key_index, search_key)
+        if rid_list:
+            candidate_rids = list(rid_list)
+        else:
+            with t.directory_lock:
+                candidate_rids = [
+                    rid for rid, entry in t.page_directory.items()
+                    if entry.is_base and not entry.is_deleted
+                ]
 
         for rid in candidate_rids:
-            if transaction and t.lock_manager is not None:
-                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
-                    transaction.abort_due_to_lock = True
-                    return False
-                transaction.held_locks[(t, rid)] = 'S'
+            entry = t.page_directory.get(rid)
+            if entry is None or not entry.is_base or entry.is_deleted:
+                continue
 
             columns = t.construct_full_record(rid, relative_version)
             if columns is None or len(columns) != t.num_columns:
@@ -124,6 +126,12 @@ class Query:
 
             if columns[search_key_index] != search_key:
                 continue
+
+            if transaction and t.lock_manager is not None:
+                if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
+                    transaction.abort_due_to_lock = True
+                    return False
+                transaction.remember_lock(t, rid, 'S')
 
             primary_key = columns[t.key]
 
@@ -151,14 +159,16 @@ class Query:
             if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
                 transaction.abort_due_to_lock = True
                 return False
-            transaction.held_locks[(t, base_rid)] = 'X'
+            transaction.remember_lock(t, base_rid, 'X')
 
         current_values = t.construct_full_record(base_rid, 0)
         if current_values is None or len(current_values) != t.num_columns:
             return False
 
         if transaction:
-            transaction.rollback_log.append(("delete", t, base_rid, list(current_values)))
+            transaction.rollback_log.append(
+                ("delete", t, base_rid, list(current_values))
+            )
 
         for i, value in enumerate(current_values):
             if value is not None:
@@ -189,7 +199,7 @@ class Query:
             if not t.lock_manager.acquire_lock(t, base_rid, transaction.transaction_id, 'X'):
                 transaction.abort_due_to_lock = True
                 return False
-            transaction.held_locks[(t, base_rid)] = 'X'
+            transaction.remember_lock(t, base_rid, 'X')
 
         current_values = t.construct_full_record(base_rid, 0)
         if current_values is None or len(current_values) != t.num_columns:
@@ -305,7 +315,7 @@ class Query:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     transaction.abort_due_to_lock = True
                     return False
-                transaction.held_locks[(t, rid)] = 'S'
+                transaction.remember_lock(t, rid, 'S')
 
             value = t.get_column_value(rid, aggregate_column_index, 0)
             if value is not None:
@@ -333,7 +343,7 @@ class Query:
                 if not t.lock_manager.acquire_lock(t, rid, transaction.transaction_id, 'S'):
                     transaction.abort_due_to_lock = True
                     return False
-                transaction.held_locks[(t, rid)] = 'S'
+                transaction.remember_lock(t, rid, 'S')
 
             value = t.get_column_value(rid, aggregate_column_index, relative_version)
             if value is not None:
