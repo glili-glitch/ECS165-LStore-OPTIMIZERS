@@ -19,11 +19,16 @@ class Transaction:
         try:
             for query, table_obj, args in self.queries:
                 result = query(*args, transaction=self)
+
                 if result is False:
-                    return self.abort()
+                    self.abort()
+                    return False
+
             return self.commit()
+
         except Exception:
-            return self.abort()
+            self.abort()
+            return False
 
     def abort(self):
         try:
@@ -73,6 +78,7 @@ class Transaction:
 
     def _release_all_locks(self):
         groups = {}
+
         for (table_obj, rid) in self.held_locks.keys():
             groups.setdefault(table_obj, []).append(rid)
 

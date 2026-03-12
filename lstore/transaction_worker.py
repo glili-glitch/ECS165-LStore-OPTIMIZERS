@@ -23,11 +23,12 @@ class TransactionWorker:
         self.stats = []
 
         for transaction in self.transactions:
+            retries = 0
             success = False
 
-            # Retry lock-conflict aborts until commit
-            while not success:
+            while retries < 5 and not success:
                 success = transaction.run()
+                retries += 1
 
             self.stats.append(success)
 
