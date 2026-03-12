@@ -158,9 +158,7 @@ class Query:
             return False
 
         if transaction:
-            transaction.rollback_log.append(
-                ("delete", t, base_rid, list(current_values))
-            )
+            transaction.rollback_log.append(("delete", t, base_rid, list(current_values)))
 
         for i, value in enumerate(current_values):
             if value is not None:

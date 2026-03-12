@@ -13,46 +13,40 @@ class LockManager:
         with self.mutex:
             if key not in self.locks:
                 self.locks[key] = {
-                    "readers": set(),
-                    "writer": None
+                    'readers': set(),
+                    'writer': None,
                 }
 
             lock = self.locks[key]
-            readers = lock["readers"]
-            writer = lock["writer"]
+            readers = lock['readers']
+            writer = lock['writer']
 
             if lock_type == 'S':
-                # already holds X or S
                 if writer == transaction_id:
                     return True
                 if transaction_id in readers:
                     return True
-
-                # no writer -> grant shared
                 if writer is None:
                     readers.add(transaction_id)
                     return True
-
                 return False
 
-            elif lock_type == 'X':
-                # already holds X
+            if lock_type == 'X':
                 if writer == transaction_id:
                     return True
 
-                # upgrade S -> X if this txn is the only reader
+                # Upgrade S -> X only if this transaction is the only reader.
                 if transaction_id in readers:
                     if len(readers) == 1 and writer is None:
                         readers.remove(transaction_id)
-                        lock["writer"] = transaction_id
+                        lock['writer'] = transaction_id
                         return True
                     return False
 
-                # fresh X request: only allowed if no readers and no writer
+                # Fresh X request.
                 if writer is None and len(readers) == 0:
-                    lock["writer"] = transaction_id
+                    lock['writer'] = transaction_id
                     return True
-
                 return False
 
             return False
@@ -61,16 +55,15 @@ class LockManager:
         with self.mutex:
             for rid in rids:
                 key = (id(table_obj), rid)
-                if key not in self.locks:
+                lock = self.locks.get(key)
+                if lock is None:
                     continue
 
-                lock = self.locks[key]
+                if lock['writer'] == transaction_id:
+                    lock['writer'] = None
 
-                if lock["writer"] == transaction_id:
-                    lock["writer"] = None
+                if transaction_id in lock['readers']:
+                    lock['readers'].remove(transaction_id)
 
-                if transaction_id in lock["readers"]:
-                    lock["readers"].remove(transaction_id)
-
-                if lock["writer"] is None and len(lock["readers"]) == 0:
+                if lock['writer'] is None and len(lock['readers']) == 0:
                     del self.locks[key]

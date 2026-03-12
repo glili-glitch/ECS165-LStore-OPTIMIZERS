@@ -21,13 +21,10 @@ class Transaction:
         try:
             for query, table_obj, args in self.queries:
                 result = query(*args, transaction=self)
-
                 if result is False:
                     self.abort()
                     return False
-
             return self.commit()
-
         except Exception:
             self.abort()
             return False
@@ -37,28 +34,27 @@ class Transaction:
             for entry in reversed(self.rollback_log):
                 action = entry[0]
 
-                if action == "index_update":
+                if action == 'index_update':
                     _, table_obj, rid, col_idx, old_val, new_val = entry
                     if new_val is not None:
                         table_obj.index.remove_from_index(col_idx, new_val, rid)
                     if old_val is not None:
                         table_obj.index.add_to_index(col_idx, old_val, rid)
 
-                elif action == "tail_insert":
+                elif action == 'tail_insert':
                     _, table_obj, tail_rid = entry
                     table_obj.delete_tail_record(tail_rid)
 
-                elif action == "update":
+                elif action == 'update':
                     _, table_obj, rid, old_ind, old_sch = entry
                     table_obj.rollback_record(rid, old_ind, old_sch)
 
-                elif action == "insert":
+                elif action == 'insert':
                     _, table_obj, rid, columns = entry
                     table_obj.delete_record(rid, columns)
 
-                elif action == "delete":
+                elif action == 'delete':
                     _, table_obj, rid, old_values = entry
-
                     restored_entry = table_obj.page_directory.get(rid)
                     if restored_entry is not None:
                         restored_entry.is_deleted = False
@@ -66,7 +62,6 @@ class Transaction:
                     for i, value in enumerate(old_values):
                         if value is not None:
                             table_obj.index.add_to_index(i, value, rid)
-
         finally:
             self.rollback_log.clear()
             self._release_all_locks()
@@ -80,7 +75,6 @@ class Transaction:
 
     def _release_all_locks(self):
         groups = {}
-
         for (table_obj, rid) in self.held_locks.keys():
             groups.setdefault(table_obj, []).append(rid)
 

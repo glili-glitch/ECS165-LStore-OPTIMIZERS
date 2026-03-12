@@ -1,7 +1,7 @@
 import threading
 from dataclasses import dataclass
 from typing import List
-from lstore.lock_manager import LockManager 
+from lstore.lock_manager import LockManager
 from lstore.index import Index
 from lstore.page import Page
 
@@ -51,12 +51,14 @@ class Table:
         self.lock_manager = LockManager()
         self.directory_lock = threading.Lock()
 
+    
+
     def allocate_base_rid(self):
         with self._rid_lock:
             rid = self._next_base_rid
             self._next_base_rid += 1
             return rid
-        
+
     def allocate_tail_rid(self):
         with self._rid_lock:
             rid = self._next_tail_rid
@@ -167,7 +169,7 @@ class Table:
 
         latest_tail_rid = self._read_page_value(base_entry, INDIRECTION_COLUMN)
         if latest_tail_rid in (None, 0, rid):
-            return base_values[:] 
+            return base_values[:]
 
         tail_chain = []
         visited = set()
@@ -213,8 +215,7 @@ class Table:
 
             if changed:
                 if new_version != versions[-1]:
-                   versions.append(new_version[:])
-            
+                    versions.append(new_version[:])
                 current = new_version[:]
 
         if relative_version == 0:
@@ -222,7 +223,7 @@ class Table:
 
         idx = len(versions) - 1 + relative_version
         if idx < 0:
-           idx = 0
+            idx = 0
 
         if idx >= len(versions):
             return None
@@ -239,75 +240,6 @@ class Table:
 
     def trigger_merge_check(self):
         return
-
-    def _bg_merge_task(self):
-        results = self._merge()
-        for pr_num, copied_pages, max_tail_rid in results:
-            pr = self.page_range_directory.get(pr_num)
-            if pr:
-                with self._merge_lock:
-                    if max_tail_rid > pr.tps:
-                        pr.base_pages = copied_pages
-                        pr.tps = max_tail_rid
-
-    def _merge(self):
-        results = []
-        pr_keys = list(self.page_range_directory.keys())
-        for pr_num in pr_keys:
-            result = self._merge_page_range(pr_num)
-            if result is not None:
-                results.append(result)
-        return results
-
-    def _merge_page_range(self, pr_num):
-        pr = self.page_range_directory.get(pr_num)
-        if pr is None or not pr.tail_records:
-            return None
-
-        with self.directory_lock:
-            current_max_rid = max(pr.tail_records.keys())
-            if current_max_rid <= pr.tps:
-                return None
-            base_rids = [
-                rid for rid, entry in self.page_directory.items()
-                if entry.is_base and entry.page_range_number == pr_num and not entry.is_deleted
-            ]
-
-        copied_pages = []
-        for col in range(self.num_columns + 3):
-            copied_col = []
-            for original_page in pr.base_pages[col]:
-                new_page = Page()
-                new_page.num_records = original_page.num_records
-                new_page.current_offset = original_page.current_offset
-                original_page._ensure_loaded()
-                new_page.data = bytearray(original_page.data)
-                copied_col.append(new_page)
-            copied_pages.append(copied_col)
-
-        for base_rid in base_rids:
-            latest_values = self.construct_full_record(base_rid, 0)
-            if latest_values is None:
-                continue
-
-            with self.directory_lock:
-                entry = self.page_directory.get(base_rid)
-                if entry is None or entry.is_deleted:
-                    continue
-                locations = entry.data_locations
-
-            for col in range(self.num_columns):
-                loc = locations[col + 3]
-                if loc is None:
-                    continue
-                value = latest_values[col]
-                if value is None:
-                    continue
-                copied_pages[col + 3][loc.page_number].data[
-                    loc.offset:loc.offset + 8
-                ] = int(value).to_bytes(8, byteorder="little", signed=True)
-
-        return pr_num, copied_pages, current_max_rid
 
     def rollback_record(self, rid, old_indirection, old_schema):
         with self.directory_lock:
